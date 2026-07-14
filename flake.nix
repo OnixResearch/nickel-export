@@ -50,6 +50,7 @@
             cargoTestFlags = [ "--workspace" ];
             postInstall = ''
               install -Dm644 config/generated/repository.json "$out/share/nickel-export/repository.json"
+              install -Dm644 config/generated/resource-limits.json "$out/share/nickel-export/resource-limits.json"
               install -Dm644 release/generated/profile.json "$out/share/nickel-export/release-profile.json"
               install -Dm644 release/evidence.md "$out/share/doc/nickel-export/release-evidence.md"
               install -Dm644 README.md "$out/share/doc/nickel-export/README.md"
@@ -160,10 +161,13 @@
             set -eu
             cd "$src"
             nickel typecheck config/repository.ncl
+            nickel typecheck config/resource-limits.ncl
             nickel typecheck release/profile.ncl
             nickel export --format json config/repository.ncl > "$TMPDIR/repository.json"
+            nickel export --format json config/resource-limits.ncl > "$TMPDIR/resource-limits.json"
             nickel export --format json release/profile.ncl > "$TMPDIR/release-profile.json"
             cmp "$TMPDIR/repository.json" config/generated/repository.json
+            cmp "$TMPDIR/resource-limits.json" config/generated/resource-limits.json
             cmp "$TMPDIR/release-profile.json" release/generated/profile.json
             touch "$out"
           '';

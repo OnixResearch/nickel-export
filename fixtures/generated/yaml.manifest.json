@@ -5,14 +5,15 @@
     "identity": "nixpkgs:nickel",
     "artifact_identity": "b3:44110681fb63c5a68c4476d76bc6dbc86ae295e791bdc6125d02e8a4acb02d34",
     "closure_identity": "",
-    "plan_identity": "b3:395f1070c08782add0519363568df08cf8b2a1ef7664a73c4fe4a82b0b9ab0dc",
+    "plan_identity": "b3:c981d3dc52beb96c3c4d7944041d120bd9387699bc2d5cc7b06531b6562b62f2",
     "version": "nickel-lang-cli-1.17.0",
     "options": [
       "color=never",
       "contract=fixtures/contract.ncl",
       "format=yaml",
       "import-path=fixtures",
-      "package-cache=private-empty"
+      "package-cache=private-empty",
+      "resource-profile=b3:d58ac963b0a1760067b848f6e1b32bfee2fc9a81cf3a17366a4650df75f101e3"
     ],
     "import_path_policy": "snapshot_only"
   },
@@ -20,7 +21,7 @@
     {
       "schema": "onix-nickel-export-receipt/v2",
       "family_id": "fixtures.yaml",
-      "declared_input_identity": "b3:a2a2c90b8c3d551719706d45a1ba44e91d0411ba4bc5617b8b8264d5083d0873",
+      "declared_input_identity": "b3:c3f0fdafa3dcb78e78ac149dbb9be92a3cc28a0cbc995c9af2c3bc152588e901",
       "source": {
         "path": "fixtures/config.ncl",
         "identity": "b3:9e5b958d59b2e8f9f80ac3579350f5d177909a816061794cf0b248ad45a2cb03",
@@ -48,14 +49,15 @@
         "identity": "nixpkgs:nickel",
         "artifact_identity": "b3:44110681fb63c5a68c4476d76bc6dbc86ae295e791bdc6125d02e8a4acb02d34",
         "closure_identity": "",
-        "plan_identity": "b3:395f1070c08782add0519363568df08cf8b2a1ef7664a73c4fe4a82b0b9ab0dc",
+        "plan_identity": "b3:c981d3dc52beb96c3c4d7944041d120bd9387699bc2d5cc7b06531b6562b62f2",
         "version": "nickel-lang-cli-1.17.0",
         "options": [
           "color=never",
           "contract=fixtures/contract.ncl",
           "format=yaml",
           "import-path=fixtures",
-          "package-cache=private-empty"
+          "package-cache=private-empty",
+          "resource-profile=b3:d58ac963b0a1760067b848f6e1b32bfee2fc9a81cf3a17366a4650df75f101e3"
         ],
         "import_path_policy": "snapshot_only"
       },
@@ -63,5 +65,5 @@
       "non_claim": "Nickel export success proves only exact declared input and output identities under the recorded evaluator descriptor; the declared input identity is not proof of a complete dependency closure or a safe cache key; the receipt does not prove deployability, product-policy conformance, evaluator equivalence, build success, or release eligibility"
     }
   ],
-  "manifest_identity": "b3:4c9ba73a482b72a28d7954b431b65925ab16ee723f29c0b526acc5b6f3571bf5"
+  "manifest_identity": "b3:104e8e102588b185a69ddf70dea5b8e18bbc9a0f5bc276212b21f398db61ec7c"
 }

@@ -5,7 +5,7 @@
     "identity": "nixpkgs:nickel",
     "artifact_identity": "b3:44110681fb63c5a68c4476d76bc6dbc86ae295e791bdc6125d02e8a4acb02d34",
     "closure_identity": "",
-    "plan_identity": "b3:2c70360f842054cf98b646a5ac5d54f4249bff2e59c548c3066f6e2760c2c55e",
+    "plan_identity": "b3:708dbbee36a6bc37c784d9a924d2c9722ac845cb35b77304efedac8911c9bc05",
     "version": "nickel-lang-cli-1.17.0",
     "options": [
       "color=never",
@@ -13,6 +13,7 @@
       "format=text",
       "import-path=fixtures",
       "package-cache=private-empty",
+      "resource-profile=b3:d58ac963b0a1760067b848f6e1b32bfee2fc9a81cf3a17366a4650df75f101e3",
       "selector=label"
     ],
     "import_path_policy": "snapshot_only"
@@ -21,7 +22,7 @@
     {
       "schema": "onix-nickel-export-receipt/v2",
       "family_id": "fixtures.raw",
-      "declared_input_identity": "b3:792507575ddb7f27672efffded9b7db4714b02f33d8dd8685e67682057f1a299",
+      "declared_input_identity": "b3:086b3c539b3aac15e538aed505e18c4c387f4dc429c9bfcea90913d4395d25bb",
       "source": {
         "path": "fixtures/config.ncl",
         "identity": "b3:9e5b958d59b2e8f9f80ac3579350f5d177909a816061794cf0b248ad45a2cb03",
@@ -49,7 +50,7 @@
         "identity": "nixpkgs:nickel",
         "artifact_identity": "b3:44110681fb63c5a68c4476d76bc6dbc86ae295e791bdc6125d02e8a4acb02d34",
         "closure_identity": "",
-        "plan_identity": "b3:2c70360f842054cf98b646a5ac5d54f4249bff2e59c548c3066f6e2760c2c55e",
+        "plan_identity": "b3:708dbbee36a6bc37c784d9a924d2c9722ac845cb35b77304efedac8911c9bc05",
         "version": "nickel-lang-cli-1.17.0",
         "options": [
           "color=never",
@@ -57,6 +58,7 @@
           "format=text",
           "import-path=fixtures",
           "package-cache=private-empty",
+          "resource-profile=b3:d58ac963b0a1760067b848f6e1b32bfee2fc9a81cf3a17366a4650df75f101e3",
           "selector=label"
         ],
         "import_path_policy": "snapshot_only"
@@ -65,5 +67,5 @@
       "non_claim": "Nickel export success proves only exact declared input and output identities under the recorded evaluator descriptor; the declared input identity is not proof of a complete dependency closure or a safe cache key; the receipt does not prove deployability, product-policy conformance, evaluator equivalence, build success, or release eligibility"
     }
   ],
-  "manifest_identity": "b3:1210fea14b3774ced6e13b5fcfaf26de11013fb741748b856cf34d742f3650e8"
+  "manifest_identity": "b3:2682c456101fd91a8ac7183c78959cb8488718a4210983cead0423f264ec3af8"
 }

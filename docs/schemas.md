@@ -30,6 +30,15 @@ does not claim sandbox confinement. The core provides
 `build_declared_input_identity` for consumers that need the identity before
 output bytes exist.
 
+## Resource limits
+
+The CLI embeds the checked export of `config/resource-limits.ncl`. Its typed
+profile bounds artifact counts and bytes, evaluator executable and stderr
+bytes, path and option lengths, diagnostic bytes, evaluator deadline, and
+status polling. The BLAKE3 profile identity is carried in the canonical typed
+execution plan. Limit violations, timeouts, and integer conversion overflow
+fail before receipt creation.
+
 ## Diagnostic: `onix-nickel-export-diagnostic/v1`
 
 Diagnostics contain a stable `class`, `subject`, human-readable `message`, and `note`, `warning`, or `error` severity. Any error diagnostic prevents receipt creation. Contract meaning remains consumer-owned.

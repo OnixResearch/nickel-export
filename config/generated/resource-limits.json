@@ -1,0 +1,11 @@
+{
+  "evaluator_poll_milliseconds": 10,
+  "evaluator_timeout_milliseconds": 30000,
+  "max_artifact_bytes": 16777216,
+  "max_artifacts": 4096,
+  "max_diagnostic_bytes": 1048576,
+  "max_evaluator_bytes": 134217728,
+  "max_option_bytes": 16384,
+  "max_path_bytes": 4096,
+  "max_stderr_bytes": 1048576
+}

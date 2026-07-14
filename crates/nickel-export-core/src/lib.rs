@@ -7,6 +7,7 @@ extern crate alloc;
 
 #[cfg(feature = "serde")]
 use alloc::collections::BTreeSet;
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -37,6 +38,26 @@ pub const OCTET_GENERATOR_ID: &str = "octet-standards.nickel-export-helper/v1";
 pub const MANTLE_NON_CLAIM: &str = "Nickel export success proves only the declared evaluation output digest under the recorded evaluator descriptor; it does not prove deployability, frontend correctness, or build success";
 /// Bound on user-provided lists before allocation-heavy processing.
 pub const MAX_ARTIFACTS: usize = 4_096;
+/// Default bytes in one mebibyte for named limit construction.
+pub const MEBIBYTE_BYTES: u64 = 1_048_576;
+/// Default bytes in one mebibyte for platform-sized limit construction.
+pub const MEBIBYTE_USIZE: usize = 1_048_576;
+/// Default maximum bytes for one source, dependency, output, or manifest artifact.
+pub const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 16 * MEBIBYTE_BYTES;
+/// Default maximum bytes for the resolved evaluator executable.
+pub const DEFAULT_MAX_EVALUATOR_BYTES: u64 = 128 * MEBIBYTE_BYTES;
+/// Default maximum bytes for evaluator stderr.
+pub const DEFAULT_MAX_STDERR_BYTES: u64 = MEBIBYTE_BYTES;
+/// Default maximum UTF-8 bytes for one normalized path.
+pub const DEFAULT_MAX_PATH_BYTES: usize = 4_096;
+/// Default maximum UTF-8 bytes for one evaluator option.
+pub const DEFAULT_MAX_OPTION_BYTES: usize = 16_384;
+/// Default maximum UTF-8 bytes across one diagnostic.
+pub const DEFAULT_MAX_DIAGNOSTIC_BYTES: usize = MEBIBYTE_USIZE;
+/// Default evaluator deadline in milliseconds.
+pub const DEFAULT_EVALUATOR_TIMEOUT_MILLISECONDS: u64 = 30_000;
+/// Default evaluator polling interval in milliseconds.
+pub const DEFAULT_EVALUATOR_POLL_MILLISECONDS: u64 = 10;
 /// Non-claim carried by canonical receipts.
 pub const NON_CLAIM: &str = "Nickel export success proves only exact declared input and output identities under the recorded evaluator descriptor; the declared input identity is not proof of a complete dependency closure or a safe cache key; the receipt does not prove deployability, product-policy conformance, evaluator equivalence, build success, or release eligibility";
 
@@ -57,6 +78,51 @@ const SECRET_MARKERS: &[&[u8]] = &[
     b"api_key=",
     b"api_key =",
 ];
+
+/// Named bounds applied by the core and evaluator shell.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+pub struct ResourceLimits {
+    /// Maximum declared artifacts or list entries.
+    pub max_artifacts: usize,
+    /// Maximum bytes for one source, dependency, output, or manifest artifact.
+    pub max_artifact_bytes: u64,
+    /// Maximum evaluator executable bytes.
+    pub max_evaluator_bytes: u64,
+    /// Maximum evaluator stderr bytes.
+    pub max_stderr_bytes: u64,
+    /// Maximum UTF-8 bytes for one path.
+    pub max_path_bytes: usize,
+    /// Maximum UTF-8 bytes for one evaluator option.
+    pub max_option_bytes: usize,
+    /// Maximum UTF-8 bytes across one diagnostic.
+    pub max_diagnostic_bytes: usize,
+    /// Evaluator deadline in milliseconds.
+    pub evaluator_timeout_milliseconds: u64,
+    /// Evaluator status polling interval in milliseconds.
+    pub evaluator_poll_milliseconds: u64,
+}
+
+impl ResourceLimits {
+    /// Repository default resource profile.
+    pub const DEFAULT: Self = Self {
+        max_artifacts: MAX_ARTIFACTS,
+        max_artifact_bytes: DEFAULT_MAX_ARTIFACT_BYTES,
+        max_evaluator_bytes: DEFAULT_MAX_EVALUATOR_BYTES,
+        max_stderr_bytes: DEFAULT_MAX_STDERR_BYTES,
+        max_path_bytes: DEFAULT_MAX_PATH_BYTES,
+        max_option_bytes: DEFAULT_MAX_OPTION_BYTES,
+        max_diagnostic_bytes: DEFAULT_MAX_DIAGNOSTIC_BYTES,
+        evaluator_timeout_milliseconds: DEFAULT_EVALUATOR_TIMEOUT_MILLISECONDS,
+        evaluator_poll_milliseconds: DEFAULT_EVALUATOR_POLL_MILLISECONDS,
+    };
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
 
 /// Output formats natively supported by Nickel.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -338,6 +404,10 @@ pub enum CoreError {
     DuplicateOutput(String),
     /// Canonical serialization failed.
     Serialization,
+    /// A count or byte length cannot be represented canonically.
+    SizeOverflow,
+    /// Material exceeds a named resource limit.
+    LimitExceeded(String),
     /// A checked-in manifest differs from current exact inputs or outputs.
     StaleManifest,
 }
@@ -366,6 +436,8 @@ impl fmt::Display for CoreError {
             }
             Self::DuplicateOutput(path) => write!(formatter, "duplicate manifest output `{path}`"),
             Self::Serialization => formatter.write_str("canonical manifest serialization failed"),
+            Self::SizeOverflow => formatter.write_str("canonical size conversion overflowed"),
+            Self::LimitExceeded(subject) => write!(formatter, "resource limit exceeded: {subject}"),
             Self::StaleManifest => formatter.write_str("checked-in export manifest is stale"),
         }
     }
@@ -388,7 +460,9 @@ pub fn normalize_request(request: &ExportRequest) -> Result<ExportRequest, CoreE
     }
     require_nonempty(&request.family_id, "family_id", &mut diagnostics);
     require_nonempty(&request.destination, "destination", &mut diagnostics);
-    if request.dependencies.len() > MAX_ARTIFACTS || request.import_paths.len() > MAX_ARTIFACTS {
+    if request.dependencies.len() > ResourceLimits::DEFAULT.max_artifacts
+        || request.import_paths.len() > ResourceLimits::DEFAULT.max_artifacts
+    {
         diagnostics.push(error(
             "artifact-bound",
             "dependencies",
@@ -456,7 +530,7 @@ pub fn build_declared_input_identity(
     input: &DeclaredInputMaterial<'_>,
 ) -> Result<String, CoreError> {
     let validated = validate_declared_input(input)?;
-    Ok(hash_declared_input(&validated))
+    hash_declared_input(&validated)
 }
 
 /// Build an accepted receipt from exact post-evaluation material.
@@ -486,6 +560,7 @@ pub fn build_receipt(observation: &EvaluationObservation<'_>) -> Result<ExportRe
     reject_secret_material(&validated.request, observation)?;
     validate_dependency_closure(&validated.request, observation)?;
     let mut diagnostics = observation.diagnostics.clone();
+    validate_diagnostic_bounds(&diagnostics)?;
     diagnostics.sort();
     if diagnostics
         .iter()
@@ -493,7 +568,7 @@ pub fn build_receipt(observation: &EvaluationObservation<'_>) -> Result<ExportRe
     {
         return Err(CoreError::EvaluationFailed(diagnostics));
     }
-    let declared_input_identity = hash_declared_input(&validated);
+    let declared_input_identity = hash_declared_input(&validated)?;
 
     Ok(ExportReceipt {
         schema: RECEIPT_SCHEMA.to_string(),
@@ -505,7 +580,7 @@ pub fn build_receipt(observation: &EvaluationObservation<'_>) -> Result<ExportRe
         selector: validated.request.selector,
         contract: validated.request.contract,
         format: validated.request.format,
-        output: artifact_identity(&observation.output),
+        output: artifact_identity(&observation.output)?,
         evaluator: validated.evaluator,
         diagnostics,
         non_claim: NON_CLAIM.to_string(),
@@ -740,12 +815,12 @@ fn validate_declared_input(
             "source material path differs from request",
         ));
     }
-    let source = artifact_identity(&input.source);
+    let source = artifact_identity(&input.source)?;
     let mut dependencies = input
         .dependencies
         .iter()
         .map(artifact_identity)
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     dependencies.sort();
     let actual_paths = dependencies
         .iter()
@@ -771,70 +846,91 @@ fn validate_declared_input(
     })
 }
 
-fn hash_declared_input(input: &ValidatedDeclaredInput) -> String {
+fn hash_declared_input(input: &ValidatedDeclaredInput) -> Result<String, CoreError> {
     let mut hasher = blake3::Hasher::new();
-    hash_bytes(&mut hasher, DECLARED_INPUT_SCHEMA.as_bytes());
-    hash_artifact_identity(&mut hasher, &input.source);
-    hash_count(&mut hasher, input.dependencies.len());
+    hash_bytes(&mut hasher, DECLARED_INPUT_SCHEMA.as_bytes())?;
+    hash_artifact_identity(&mut hasher, &input.source)?;
+    hash_count(&mut hasher, input.dependencies.len())?;
     for dependency in &input.dependencies {
-        hash_artifact_identity(&mut hasher, dependency);
+        hash_artifact_identity(&mut hasher, dependency)?;
     }
-    hash_count(&mut hasher, input.request.import_paths.len());
+    hash_count(&mut hasher, input.request.import_paths.len())?;
     for import_path in &input.request.import_paths {
-        hash_bytes(&mut hasher, import_path.as_bytes());
+        hash_bytes(&mut hasher, import_path.as_bytes())?;
     }
-    hash_bytes(&mut hasher, input.request.selector.as_bytes());
-    hash_bytes(&mut hasher, input.request.contract.as_bytes());
-    hash_bytes(&mut hasher, input.request.format.as_str().as_bytes());
-    hash_bytes(&mut hasher, input.evaluator.identity.as_bytes());
-    hash_bytes(&mut hasher, input.evaluator.artifact_identity.as_bytes());
-    hash_bytes(&mut hasher, input.evaluator.closure_identity.as_bytes());
-    hash_bytes(&mut hasher, input.evaluator.plan_identity.as_bytes());
-    hash_bytes(&mut hasher, input.evaluator.version.as_bytes());
-    hash_count(&mut hasher, input.evaluator.options.len());
+    hash_bytes(&mut hasher, input.request.selector.as_bytes())?;
+    hash_bytes(&mut hasher, input.request.contract.as_bytes())?;
+    hash_bytes(&mut hasher, input.request.format.as_str().as_bytes())?;
+    hash_bytes(&mut hasher, input.evaluator.identity.as_bytes())?;
+    hash_bytes(&mut hasher, input.evaluator.artifact_identity.as_bytes())?;
+    hash_bytes(&mut hasher, input.evaluator.closure_identity.as_bytes())?;
+    hash_bytes(&mut hasher, input.evaluator.plan_identity.as_bytes())?;
+    hash_bytes(&mut hasher, input.evaluator.version.as_bytes())?;
+    hash_count(&mut hasher, input.evaluator.options.len())?;
     for option in &input.evaluator.options {
-        hash_bytes(&mut hasher, option.as_bytes());
+        hash_bytes(&mut hasher, option.as_bytes())?;
     }
     hash_bytes(
         &mut hasher,
         input.evaluator.import_path_policy.as_str().as_bytes(),
-    );
-    format_blake3_identity(&hasher.finalize())
+    )?;
+    Ok(format_blake3_identity(&hasher.finalize()))
 }
 
-fn hash_artifact_identity(hasher: &mut blake3::Hasher, artifact: &ArtifactIdentity) {
-    hash_bytes(hasher, artifact.path.as_bytes());
-    hash_bytes(hasher, artifact.identity.as_bytes());
+fn hash_artifact_identity(
+    hasher: &mut blake3::Hasher,
+    artifact: &ArtifactIdentity,
+) -> Result<(), CoreError> {
+    hash_bytes(hasher, artifact.path.as_bytes())?;
+    hash_bytes(hasher, artifact.identity.as_bytes())?;
     hasher.update(&artifact.bytes.to_be_bytes());
+    Ok(())
 }
 
-fn hash_count(hasher: &mut blake3::Hasher, count: usize) {
-    let bounded = u64::try_from(count).unwrap_or(u64::MAX);
+fn hash_count(hasher: &mut blake3::Hasher, count: usize) -> Result<(), CoreError> {
+    let bounded = u64::try_from(count).map_err(|_| CoreError::SizeOverflow)?;
     hasher.update(&bounded.to_be_bytes());
+    Ok(())
 }
 
-fn hash_bytes(hasher: &mut blake3::Hasher, bytes: &[u8]) {
-    hash_count(hasher, bytes.len());
+fn hash_bytes(hasher: &mut blake3::Hasher, bytes: &[u8]) -> Result<(), CoreError> {
+    hash_count(hasher, bytes.len())?;
     hasher.update(bytes);
+    Ok(())
 }
 
-fn artifact_identity(material: &ArtifactMaterial<'_>) -> ArtifactIdentity {
-    ArtifactIdentity {
+fn artifact_identity(material: &ArtifactMaterial<'_>) -> Result<ArtifactIdentity, CoreError> {
+    let bytes = u64::try_from(material.bytes.len()).map_err(|_| CoreError::SizeOverflow)?;
+    if bytes > ResourceLimits::DEFAULT.max_artifact_bytes {
+        return Err(CoreError::LimitExceeded(material.path.to_string()));
+    }
+    Ok(ArtifactIdentity {
         path: material.path.to_string(),
         identity: blake3_identity(material.bytes),
-        bytes: u64::try_from(material.bytes.len()).unwrap_or(u64::MAX),
-    }
+        bytes,
+    })
 }
 
 fn validate_evaluator(evaluator: &EvaluatorDescriptor) -> Result<EvaluatorDescriptor, CoreError> {
     let mut diagnostics = Vec::new();
     require_nonempty(&evaluator.identity, "evaluator.identity", &mut diagnostics);
     require_nonempty(&evaluator.version, "evaluator.version", &mut diagnostics);
-    if evaluator.options.len() > MAX_ARTIFACTS {
+    if evaluator.options.len() > ResourceLimits::DEFAULT.max_artifacts {
         diagnostics.push(error(
             "option-bound",
             "evaluator.options",
             "evaluator exceeds the bounded option count",
+        ));
+    }
+    if evaluator
+        .options
+        .iter()
+        .any(|option| option.len() > ResourceLimits::DEFAULT.max_option_bytes)
+    {
+        diagnostics.push(error(
+            "option-size-bound",
+            "evaluator.options",
+            "an evaluator option exceeds the configured byte bound",
         ));
     }
     let mut normalized = evaluator.clone();
@@ -895,6 +991,9 @@ fn normalize_relative_path(path: &str) -> Result<String, &'static str> {
     if trimmed.is_empty() {
         return Err("path must not be empty");
     }
+    if trimmed.len() > ResourceLimits::DEFAULT.max_path_bytes {
+        return Err("path exceeds the configured byte bound");
+    }
     if trimmed.starts_with('/') || trimmed.contains('\\') {
         return Err("path must be portable and repository-root-relative");
     }
@@ -921,14 +1020,9 @@ fn reject_secret_material(
     }
     let materials = core::iter::once(&observation.source).chain(observation.dependencies.iter());
     for material in materials {
-        let lowercase = material
-            .bytes
-            .iter()
-            .map(u8::to_ascii_lowercase)
-            .collect::<Vec<_>>();
         if SECRET_MARKERS
             .iter()
-            .any(|marker| contains_bytes(&lowercase, marker))
+            .any(|marker| contains_ascii_case_insensitive(material.bytes, marker))
         {
             return Err(CoreError::SecretMaterial(material.path.to_string()));
         }
@@ -971,10 +1065,32 @@ fn validate_dependency_closure(
     }
 }
 
-fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
+fn validate_diagnostic_bounds(diagnostics: &[Diagnostic]) -> Result<(), CoreError> {
+    for diagnostic in diagnostics {
+        let bytes = diagnostic
+            .schema
+            .len()
+            .checked_add(diagnostic.class.len())
+            .and_then(|total| total.checked_add(diagnostic.subject.len()))
+            .and_then(|total| total.checked_add(diagnostic.message.len()))
+            .ok_or(CoreError::SizeOverflow)?;
+        if bytes > ResourceLimits::DEFAULT.max_diagnostic_bytes {
+            return Err(CoreError::LimitExceeded(format!(
+                "diagnostic:{}",
+                diagnostic.class
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|window| {
+        window
+            .iter()
+            .zip(needle)
+            .all(|(left, right)| left.eq_ignore_ascii_case(right))
+    })
 }
 
 fn project_octet_entry(receipt: &ExportReceipt) -> OctetManifestEntry {
@@ -1319,6 +1435,27 @@ mod tests {
             assert_eq!(receipt.dependencies.len(), request.dependencies.len());
             assert_eq!(receipt.evaluator.identity, evaluator.identity);
         }
+    }
+
+    // r[verify nickel_export.shell.bounded_evaluation]
+    #[test]
+    fn rejects_paths_and_options_beyond_named_bounds() {
+        let mut overlong_path = request("generated/config.json");
+        overlong_path.source = "a".repeat(DEFAULT_MAX_PATH_BYTES + 1);
+        assert!(matches!(
+            normalize_request(&overlong_path),
+            Err(CoreError::InvalidRequest(_))
+        ));
+
+        let request = request("generated/config.json");
+        let mut evaluator = evaluator("nickel-cli");
+        evaluator
+            .options
+            .push("x".repeat(DEFAULT_MAX_OPTION_BYTES + 1));
+        assert!(matches!(
+            declared_identity_for(&request, SOURCE, DEPENDENCY, &evaluator),
+            Err(CoreError::InvalidRequest(_))
+        ));
     }
 
     #[test]

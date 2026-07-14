@@ -3,16 +3,18 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
 use nickel_export_core::{
     ArtifactMaterial, EvaluationObservation, EvaluatorDescriptor, ExportFormat, ExportManifest,
-    ExportRequest, ImportPathPolicy, blake3_identity, build_manifest, build_receipt,
-    normalize_request, verify_manifest_fresh,
+    ExportRequest, ImportPathPolicy, ResourceLimits, blake3_identity, build_manifest,
+    build_receipt, normalize_request, verify_manifest_fresh,
 };
 
 /// Stable non-zero process exit used for all fail-closed shell errors.
@@ -34,6 +36,9 @@ const NICKEL_PACKAGE_VERSION_PREFIX: &str = "nickel-lang-cli-";
 const SNAPSHOT_DIRECTORY_PREFIX: &str = "nickel-export-snapshot";
 const SNAPSHOT_PACKAGE_CACHE: &str = ".nickel-package-cache";
 const SNAPSHOT_CREATE_ATTEMPTS: u64 = 64;
+const STREAM_BUFFER_BYTES: usize = 8_192;
+const DEFAULT_RESOURCE_LIMITS_JSON: &str =
+    include_str!("../../../config/generated/resource-limits.json");
 static SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Shell error with a stable stage classification.
@@ -88,6 +93,7 @@ struct CanonicalEvaluationPlan {
     format: String,
     color: String,
     package_cache_policy: String,
+    resource_profile_identity: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -114,6 +120,20 @@ impl Drop for EvaluationSnapshot {
     }
 }
 
+#[derive(Debug)]
+struct LoadedExport {
+    root: PathBuf,
+    request: ExportRequest,
+    source_bytes: Vec<u8>,
+    dependency_bytes: Vec<(String, Vec<u8>)>,
+}
+
+#[derive(Debug)]
+struct EvaluatedExport {
+    output: Output,
+    evaluator: EvaluatorDescriptor,
+}
+
 /// Execute the CLI shell around the pure core.
 ///
 /// # Errors
@@ -126,63 +146,52 @@ pub fn run(args: &[String]) -> Result<(), ShellError> {
     execute(&options)
 }
 
+fn resource_limits() -> Result<ResourceLimits, ShellError> {
+    let limits: ResourceLimits = serde_json::from_str(DEFAULT_RESOURCE_LIMITS_JSON)
+        .map_err(|error| ShellError::new("resource-limits", error.to_string()))?;
+    if limits.max_artifacts == 0
+        || limits.max_artifact_bytes == 0
+        || limits.max_evaluator_bytes == 0
+        || limits.max_stderr_bytes == 0
+        || limits.max_path_bytes == 0
+        || limits.max_option_bytes == 0
+        || limits.max_diagnostic_bytes == 0
+        || limits.evaluator_timeout_milliseconds == 0
+        || limits.evaluator_poll_milliseconds == 0
+    {
+        return Err(ShellError::new(
+            "resource-limits",
+            "every resource limit must be non-zero",
+        ));
+    }
+    Ok(limits)
+}
+
 // r[impl nickel_export.shell.authority]
 fn execute(options: &CliOptions) -> Result<(), ShellError> {
-    let root = canonical_root(&options.root)?;
-    let request_bytes = read_root_path(&root, &options.spec, "read-spec")?;
-    let request: ExportRequest = serde_json::from_slice(&request_bytes).map_err(|error| {
-        ShellError::new("parse-spec", format!("{}: {error}", options.spec.display()))
-    })?;
-    let request = normalize_request(&request)
-        .map_err(|error| ShellError::new("validate-spec", error.to_string()))?;
-    validate_shell_contract(&request)?;
-    let source_bytes = read_root_file(&root, &request.source, "read-source")?;
-    let dependency_bytes = request
-        .dependencies
-        .iter()
-        .map(|path| {
-            read_root_file(&root, path, "read-dependency").map(|bytes| (path.as_str(), bytes))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let captured = capture_files(&request, &source_bytes, &dependency_bytes)?;
-    let snapshot = materialize_snapshot(&request, &captured)?;
-    let evaluator_program = resolve_evaluator_program(&options.evaluator)?;
-    let canonical_plan = canonical_evaluation_plan(&request);
-    let plan_identity = canonical_plan_identity(&canonical_plan)?;
-    let artifact_identity = evaluator_artifact_identity(&evaluator_program)?;
-    let plan = evaluation_plan(&evaluator_program, &canonical_plan, &snapshot.root);
-    verify_evaluator_version(&plan.program, &options.evaluator_version)?;
-    verify_evaluator_artifact(&evaluator_program, &artifact_identity)?;
-    let output = run_evaluator(&plan)?;
-    verify_evaluator_artifact(&evaluator_program, &artifact_identity)?;
-    let evaluator = EvaluatorDescriptor {
-        identity: options.evaluator_identity.clone(),
-        artifact_identity,
-        closure_identity: String::new(),
-        plan_identity,
-        version: options.evaluator_version.clone(),
-        options: evaluator_options(&canonical_plan),
-        import_path_policy: ImportPathPolicy::SnapshotOnly,
-    };
-    let dependencies = dependency_bytes
+    let limits = resource_limits()?;
+    let loaded = load_export(options, &limits)?;
+    let evaluated = evaluate_export(options, &loaded, &limits)?;
+    let dependencies = loaded
+        .dependency_bytes
         .iter()
         .map(|(path, bytes)| ArtifactMaterial {
-            path,
+            path: path.as_str(),
             bytes: bytes.as_slice(),
         })
         .collect();
     let observation = EvaluationObservation {
-        request: &request,
+        request: &loaded.request,
         source: ArtifactMaterial {
-            path: &request.source,
-            bytes: &source_bytes,
+            path: &loaded.request.source,
+            bytes: &loaded.source_bytes,
         },
         dependencies,
         output: ArtifactMaterial {
-            path: &request.destination,
-            bytes: &output.stdout,
+            path: &loaded.request.destination,
+            bytes: &evaluated.output.stdout,
         },
-        evaluator: &evaluator,
+        evaluator: &evaluated.evaluator,
         observed_dependencies: Vec::new(),
         diagnostics: Vec::new(),
     };
@@ -192,24 +201,101 @@ fn execute(options: &CliOptions) -> Result<(), ShellError> {
         .map_err(|error| ShellError::new("build-manifest", error.to_string()))?;
     match options.mode {
         Mode::Write => write_artifacts(
-            &root,
-            &request,
-            &output.stdout,
+            &loaded.root,
+            &loaded.request,
+            &evaluated.output.stdout,
             &options.manifest,
             &manifest,
         )?,
         Mode::Check => check_artifacts(
-            &root,
-            &request,
-            &output.stdout,
+            &loaded.root,
+            &loaded.request,
+            &evaluated.output.stdout,
             &options.manifest,
             &manifest,
+            &limits,
         )?,
     }
     let rendered_receipt = serde_json::to_string(&receipt)
         .map_err(|error| ShellError::new("render-receipt", error.to_string()))?;
     println!("{rendered_receipt}");
     Ok(())
+}
+
+fn load_export(options: &CliOptions, limits: &ResourceLimits) -> Result<LoadedExport, ShellError> {
+    let root = canonical_root(&options.root)?;
+    let request_bytes =
+        read_root_path(&root, &options.spec, "read-spec", limits.max_artifact_bytes)?;
+    let request: ExportRequest = serde_json::from_slice(&request_bytes).map_err(|error| {
+        ShellError::new("parse-spec", format!("{}: {error}", options.spec.display()))
+    })?;
+    let request = normalize_request(&request)
+        .map_err(|error| ShellError::new("validate-spec", error.to_string()))?;
+    validate_shell_contract(&request)?;
+    let source_bytes = read_root_file(
+        &root,
+        &request.source,
+        "read-source",
+        limits.max_artifact_bytes,
+    )?;
+    let dependency_bytes = request
+        .dependencies
+        .iter()
+        .map(|path| {
+            read_root_file(&root, path, "read-dependency", limits.max_artifact_bytes)
+                .map(|bytes| (path.clone(), bytes))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(LoadedExport {
+        root,
+        request,
+        source_bytes,
+        dependency_bytes,
+    })
+}
+
+fn evaluate_export(
+    options: &CliOptions,
+    loaded: &LoadedExport,
+    limits: &ResourceLimits,
+) -> Result<EvaluatedExport, ShellError> {
+    let captured = capture_files(
+        &loaded.request,
+        &loaded.source_bytes,
+        &loaded.dependency_bytes,
+    )?;
+    let snapshot = materialize_snapshot(&loaded.request, &captured)?;
+    let evaluator_program = resolve_evaluator_program(&options.evaluator)?;
+    let resource_profile_identity = blake3_identity(DEFAULT_RESOURCE_LIMITS_JSON.as_bytes());
+    let canonical_plan = canonical_evaluation_plan(&loaded.request, &resource_profile_identity);
+    let plan_identity = canonical_plan_identity(&canonical_plan)?;
+    let artifact_identity =
+        evaluator_artifact_identity(&evaluator_program, limits.max_evaluator_bytes)?;
+    let plan = evaluation_plan(&evaluator_program, &canonical_plan, &snapshot.root);
+    verify_evaluator_version(&plan.program, &options.evaluator_version)?;
+    verify_evaluator_artifact(
+        &evaluator_program,
+        &artifact_identity,
+        limits.max_evaluator_bytes,
+    )?;
+    let output = run_evaluator(&plan, limits)?;
+    verify_evaluator_artifact(
+        &evaluator_program,
+        &artifact_identity,
+        limits.max_evaluator_bytes,
+    )?;
+    Ok(EvaluatedExport {
+        output,
+        evaluator: EvaluatorDescriptor {
+            identity: options.evaluator_identity.clone(),
+            artifact_identity,
+            closure_identity: String::new(),
+            plan_identity,
+            version: options.evaluator_version.clone(),
+            options: evaluator_options(&canonical_plan),
+            import_path_policy: ImportPathPolicy::SnapshotOnly,
+        },
+    })
 }
 
 fn parse_args(args: &[String]) -> Result<CliOptions, ShellError> {
@@ -333,7 +419,7 @@ fn validate_shell_contract(request: &ExportRequest) -> Result<(), ShellError> {
 fn capture_files(
     request: &ExportRequest,
     source_bytes: &[u8],
-    dependency_bytes: &[(&str, Vec<u8>)],
+    dependency_bytes: &[(String, Vec<u8>)],
 ) -> Result<Vec<CapturedFile>, ShellError> {
     if request.dependencies.len() != dependency_bytes.len() {
         return Err(ShellError::new(
@@ -354,7 +440,7 @@ fn capture_files(
             ));
         }
         captured.push(CapturedFile {
-            path: declared.clone(),
+            path: path.clone(),
             bytes: bytes.clone(),
         });
     }
@@ -458,7 +544,10 @@ fn canonical_evaluator_program(program: &Path) -> Result<PathBuf, ShellError> {
 }
 
 // r[impl nickel_export.shell.evaluator_execution_identity]
-fn canonical_evaluation_plan(request: &ExportRequest) -> CanonicalEvaluationPlan {
+fn canonical_evaluation_plan(
+    request: &ExportRequest,
+    resource_profile_identity: &str,
+) -> CanonicalEvaluationPlan {
     CanonicalEvaluationPlan {
         source: request.source.clone(),
         import_paths: request.import_paths.clone(),
@@ -467,6 +556,7 @@ fn canonical_evaluation_plan(request: &ExportRequest) -> CanonicalEvaluationPlan
         format: evaluator_format(request.format).to_string(),
         color: "never".to_string(),
         package_cache_policy: "private-empty".to_string(),
+        resource_profile_identity: resource_profile_identity.to_string(),
     }
 }
 
@@ -524,6 +614,7 @@ fn evaluator_options(plan: &CanonicalEvaluationPlan) -> Vec<String> {
         format!("color={}", plan.color),
         format!("format={}", plan.format),
         format!("package-cache={}", plan.package_cache_policy),
+        format!("resource-profile={}", plan.resource_profile_identity),
     ];
     options.extend(
         plan.import_paths
@@ -539,18 +630,17 @@ fn evaluator_options(plan: &CanonicalEvaluationPlan) -> Vec<String> {
     options
 }
 
-fn evaluator_artifact_identity(program: &Path) -> Result<String, ShellError> {
-    let bytes = fs::read(program).map_err(|error| {
-        ShellError::new(
-            "evaluator-artifact",
-            format!("{}: {error}", program.display()),
-        )
-    })?;
+fn evaluator_artifact_identity(program: &Path, max_bytes: u64) -> Result<String, ShellError> {
+    let bytes = read_file_bounded(program, "evaluator-artifact", max_bytes)?;
     Ok(blake3_identity(&bytes))
 }
 
-fn verify_evaluator_artifact(program: &Path, expected: &str) -> Result<(), ShellError> {
-    let actual = evaluator_artifact_identity(program)?;
+fn verify_evaluator_artifact(
+    program: &Path,
+    expected: &str,
+    max_bytes: u64,
+) -> Result<(), ShellError> {
+    let actual = evaluator_artifact_identity(program, max_bytes)?;
     if actual == expected {
         Ok(())
     } else {
@@ -598,12 +688,58 @@ fn evaluator_command(program: &Path) -> Command {
     command
 }
 
-fn run_evaluator(plan: &EvaluationPlan) -> Result<Output, ShellError> {
-    let output = evaluator_command(&plan.program)
+// r[impl nickel_export.shell.bounded_evaluation]
+fn run_evaluator(plan: &EvaluationPlan, limits: &ResourceLimits) -> Result<Output, ShellError> {
+    let mut child = evaluator_command(&plan.program)
         .args(&plan.args)
         .current_dir(&plan.current_dir)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| ShellError::new("evaluator-spawn", error.to_string()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ShellError::new("evaluator-stdout", "stdout pipe is unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| ShellError::new("evaluator-stderr", "stderr pipe is unavailable"))?;
+    let max_stdout = limits.max_artifact_bytes;
+    let max_stderr = limits.max_stderr_bytes;
+    let stdout_reader =
+        std::thread::spawn(move || read_stream_bounded(stdout, max_stdout, "evaluator-stdout"));
+    let stderr_reader =
+        std::thread::spawn(move || read_stream_bounded(stderr, max_stderr, "evaluator-stderr"));
+    let timeout = Duration::from_millis(limits.evaluator_timeout_milliseconds);
+    let poll = Duration::from_millis(limits.evaluator_poll_milliseconds);
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| ShellError::new("evaluator-wait", error.to_string()))?
+        {
+            break status;
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = join_bounded_reader(stdout_reader, "evaluator-stdout");
+            let _ = join_bounded_reader(stderr_reader, "evaluator-stderr");
+            return Err(ShellError::new(
+                "evaluator-timeout",
+                "evaluator exceeded the configured deadline",
+            ));
+        }
+        std::thread::sleep(poll);
+    };
+    let stdout = join_bounded_reader(stdout_reader, "evaluator-stdout")?;
+    let stderr = join_bounded_reader(stderr_reader, "evaluator-stderr")?;
+    let output = Output {
+        status,
+        stdout,
+        stderr,
+    };
     if output.status.success() {
         Ok(output)
     } else {
@@ -613,6 +749,45 @@ fn run_evaluator(plan: &EvaluationPlan) -> Result<Output, ShellError> {
             format!("status {}: {stderr}", output.status),
         ))
     }
+}
+
+fn read_stream_bounded(
+    mut reader: impl Read,
+    max_bytes: u64,
+    stage: &'static str,
+) -> Result<Vec<u8>, ShellError> {
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; STREAM_BUFFER_BYTES];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|error| ShellError::new(stage, error.to_string()))?;
+        if read == 0 {
+            return Ok(output);
+        }
+        let next = output
+            .len()
+            .checked_add(read)
+            .ok_or_else(|| ShellError::new(stage, "stream byte length overflowed"))?;
+        let next_u64 = u64::try_from(next)
+            .map_err(|_| ShellError::new(stage, "stream byte length overflowed"))?;
+        if next_u64 > max_bytes {
+            return Err(ShellError::new(
+                stage,
+                "stream exceeds the configured byte bound",
+            ));
+        }
+        output.extend_from_slice(&buffer[..read]);
+    }
+}
+
+fn join_bounded_reader(
+    handle: std::thread::JoinHandle<Result<Vec<u8>, ShellError>>,
+    stage: &'static str,
+) -> Result<Vec<u8>, ShellError> {
+    handle
+        .join()
+        .map_err(|_| ShellError::new(stage, "stream reader thread failed"))?
 }
 
 fn write_artifacts(
@@ -639,15 +814,26 @@ fn check_artifacts(
     output: &[u8],
     manifest_path: &Path,
     manifest: &ExportManifest,
+    limits: &ResourceLimits,
 ) -> Result<(), ShellError> {
-    let checked_output = read_root_file(root, &request.destination, "check-output")?;
+    let checked_output = read_root_file(
+        root,
+        &request.destination,
+        "check-output",
+        limits.max_artifact_bytes,
+    )?;
     if checked_output != output {
         return Err(ShellError::new(
             "check-output",
             format!("`{}` is stale", request.destination),
         ));
     }
-    let checked_manifest_bytes = read_root_path(root, manifest_path, "check-manifest")?;
+    let checked_manifest_bytes = read_root_path(
+        root,
+        manifest_path,
+        "check-manifest",
+        limits.max_artifact_bytes,
+    )?;
     let checked_manifest: ExportManifest = serde_json::from_slice(&checked_manifest_bytes)
         .map_err(|error| ShellError::new("check-manifest", error.to_string()))?;
     verify_manifest_fresh(&checked_manifest, manifest)
@@ -659,15 +845,50 @@ fn canonical_root(path: &Path) -> Result<PathBuf, ShellError> {
         .map_err(|error| ShellError::new("root", format!("{}: {error}", path.display())))
 }
 
-fn read_file(path: &Path, stage: &'static str) -> Result<Vec<u8>, ShellError> {
-    fs::read(path).map_err(|error| ShellError::new(stage, format!("{}: {error}", path.display())))
+fn read_file_bounded(
+    path: &Path,
+    stage: &'static str,
+    max_bytes: u64,
+) -> Result<Vec<u8>, ShellError> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| ShellError::new(stage, format!("{}: {error}", path.display())))?;
+    if metadata.len() > max_bytes {
+        return Err(ShellError::new(
+            stage,
+            format!("{} exceeds the configured byte bound", path.display()),
+        ));
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| ShellError::new(stage, format!("{}: {error}", path.display())))?;
+    let actual = u64::try_from(bytes.len())
+        .map_err(|_| ShellError::new(stage, "file byte length overflowed"))?;
+    if actual > max_bytes {
+        return Err(ShellError::new(
+            stage,
+            format!(
+                "{} changed beyond the configured byte bound",
+                path.display()
+            ),
+        ));
+    }
+    Ok(bytes)
 }
 
-fn read_root_file(root: &Path, path: &str, stage: &'static str) -> Result<Vec<u8>, ShellError> {
-    read_root_path(root, Path::new(path), stage)
+fn read_root_file(
+    root: &Path,
+    path: &str,
+    stage: &'static str,
+    max_bytes: u64,
+) -> Result<Vec<u8>, ShellError> {
+    read_root_path(root, Path::new(path), stage, max_bytes)
 }
 
-fn read_root_path(root: &Path, path: &Path, stage: &'static str) -> Result<Vec<u8>, ShellError> {
+fn read_root_path(
+    root: &Path,
+    path: &Path,
+    stage: &'static str,
+    max_bytes: u64,
+) -> Result<Vec<u8>, ShellError> {
     validate_relative_shell_path(path, stage)?;
     let candidate = root.join(path);
     reject_symlink_components(root, path, stage)?;
@@ -680,7 +901,7 @@ fn read_root_path(root: &Path, path: &Path, stage: &'static str) -> Result<Vec<u
             format!("{} escapes the repository root", candidate.display()),
         ));
     }
-    read_file(&canonical, stage)
+    read_file_bounded(&canonical, stage, max_bytes)
 }
 
 fn write_root_file(
@@ -853,7 +1074,8 @@ mod tests {
             destination: "generated/value.txt".to_string(),
             allow_secret_material: false,
         };
-        let canonical = canonical_evaluation_plan(&request);
+        let resource_profile_identity = blake3_identity(b"test-resource-profile");
+        let canonical = canonical_evaluation_plan(&request, &resource_profile_identity);
         let plan = evaluation_plan(&options.evaluator, &canonical, Path::new("/tmp/root"));
         assert_eq!(plan.program, PathBuf::from("nickel"));
         assert!(plan.args.contains(&OsString::from("text")));
@@ -941,16 +1163,59 @@ mod tests {
         fs::write(&artifact, original).unwrap_or_else(|error| {
             panic_for_test::<()>(&ShellError::new("test-setup", error.to_string()));
         });
-        let identity =
-            evaluator_artifact_identity(&artifact).unwrap_or_else(|error| panic_for_test(&error));
-        assert!(verify_evaluator_artifact(&artifact, &identity).is_ok());
+        let max_bytes = ResourceLimits::DEFAULT.max_evaluator_bytes;
+        let identity = evaluator_artifact_identity(&artifact, max_bytes)
+            .unwrap_or_else(|error| panic_for_test(&error));
+        assert!(verify_evaluator_artifact(&artifact, &identity, max_bytes).is_ok());
         fs::write(&artifact, changed).unwrap_or_else(|error| {
             panic_for_test::<()>(&ShellError::new("test-mutate", error.to_string()));
         });
-        assert!(verify_evaluator_artifact(&artifact, &identity).is_err());
+        assert!(verify_evaluator_artifact(&artifact, &identity, max_bytes).is_err());
         fs::remove_file(&artifact).unwrap_or_else(|error| {
             panic_for_test::<()>(&ShellError::new("test-cleanup", error.to_string()));
         });
+    }
+
+    // r[verify nickel_export.shell.bounded_evaluation]
+    #[test]
+    fn resource_profile_and_stream_bounds_fail_closed() {
+        const TEST_STREAM_BOUND: u64 = 4;
+        const TEST_TIMEOUT_MILLISECONDS: u64 = 20;
+        const TEST_POLL_MILLISECONDS: u64 = 1;
+
+        let limits = resource_limits().unwrap_or_else(|error| panic_for_test(&error));
+        assert_eq!(limits, ResourceLimits::DEFAULT);
+        let exact = read_stream_bounded(
+            std::io::Cursor::new(b"four"),
+            TEST_STREAM_BOUND,
+            "test-stream",
+        );
+        let oversized = read_stream_bounded(
+            std::io::Cursor::new(b"oversized"),
+            TEST_STREAM_BOUND,
+            "test-stream",
+        );
+        assert!(exact.is_ok());
+        assert!(oversized.is_err());
+
+        let shell_program = resolve_evaluator_program(Path::new("/bin/sh"))
+            .unwrap_or_else(|error| panic_for_test(&error));
+        let plan = EvaluationPlan {
+            program: shell_program,
+            args: vec![OsString::from("-c"), OsString::from("while :; do :; done")],
+            current_dir: std::env::temp_dir(),
+        };
+        let timeout_limits = ResourceLimits {
+            evaluator_timeout_milliseconds: TEST_TIMEOUT_MILLISECONDS,
+            evaluator_poll_milliseconds: TEST_POLL_MILLISECONDS,
+            ..limits
+        };
+        let timeout = run_evaluator(&plan, &timeout_limits);
+        assert!(timeout.is_err());
+        assert_eq!(
+            timeout.err().map(|error| error.stage),
+            Some("evaluator-timeout")
+        );
     }
 
     #[test]
