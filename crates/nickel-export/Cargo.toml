@@ -1,6 +1,7 @@
 [package]
 name = "nickel-export"
 description = "Thin file and evaluator shell for deterministic Nickel exports"
+publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

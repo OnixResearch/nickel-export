@@ -33,4 +33,4 @@ Date: 2026-07-14
 
 ## Publication boundary
 
-This checkout is an independent local Git/Jujutsu repository. Consumer manifests must not depend on it through a workspace-relative path. Octet and other consumers remain on their legacy paths until this repository is published and they can pin an immutable remote revision. Publishing or pushing is intentionally outside this local evidence step.
+This project is distributed through immutable remote Git revisions and Nix inputs. Consumer manifests must not use workspace-relative release dependencies. Both Cargo packages set `publish = false`; crates.io publication is explicitly outside the release boundary.

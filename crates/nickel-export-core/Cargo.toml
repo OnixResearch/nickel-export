@@ -1,6 +1,7 @@
 [package]
 name = "nickel-export-core"
 description = "Evaluator-neutral deterministic Nickel export identities and receipts"
+publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
