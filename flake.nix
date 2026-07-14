@@ -200,6 +200,10 @@
               --evaluator-version nickel-lang-cli-1.17.0 \
               --manifest examples/service-config/generated/manifest.json \
               --check > "$TMPDIR/service-config.receipt.json"
+            nickel-export verify \
+              --manifest examples/service-config/generated/manifest.json \
+              --root . \
+              --check-artifacts > "$TMPDIR/service-config.integrity.json"
             if nickel-export export \
               --spec fixtures/requests/unsafe.json \
               --root . \

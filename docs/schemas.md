@@ -64,6 +64,16 @@ The core rejects source/output path mismatches, incomplete dependency material, 
 
 A manifest contains receipts sorted by destination and one shared evaluator descriptor. Duplicate destinations and mixed evaluator descriptors are rejected. `manifest_identity` is BLAKE3 over `onix-nickel-export-manifest-identity/v1` canonical bytes before the identity field is attached. Receipt and manifest canonical bytes use checked big-endian lengths and list counts; pretty JSON remains only the human-facing wire representation. Freshness is exact equality against a newly derived manifest.
 
+## Integrity report: `onix-nickel-export-integrity-report/v1`
+
+`nickel-export verify` strictly decodes and admits a stored manifest, recomputes
+receipt and manifest canonical identities, and checks schema, path, hash,
+non-claim, evaluator-cohort, ordering, and uniqueness invariants without
+invoking Nickel. With `--check-artifacts`, it also reads every referenced source,
+dependency, and output and verifies exact BLAKE3 identities and byte lengths.
+The report explicitly does not claim freshness for absent bytes, evaluator
+correctness, or semantic correctness.
+
 ## Compatibility projections
 
 `project_octet_manifest` emits `octet-nickel-export-manifest/v1`, including bare hexadecimal BLAKE3 values and replay command fields. `project_mantle_receipt` emits `mantle-nickel-export-receipt-v1`. Projections are intentionally one-way: canonical admission occurs first, then the legacy shape is derived.

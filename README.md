@@ -55,6 +55,19 @@ nix develop -c cargo run --quiet -p nickel-export -- export \
 
 Use `--write` to update the destination and manifest. Exactly one of `--write` and `--check` is required. Source, dependency, evaluator, output, diagnostic, and process-time bounds come from the Nickel-authored `config/resource-limits.ncl` profile embedded in the CLI; timeout, stream overflow, and size conversion failures issue no receipt.
 
+Verify stored canonical integrity without running Nickel or writing files:
+
+```console
+nix develop -c cargo run --quiet -p nickel-export -- verify \
+  --manifest examples/service-config/generated/manifest.json \
+  --root . \
+  --check-artifacts
+```
+
+Structural integrity is not freshness or semantic correctness. `--check-artifacts`
+only verifies exact bytes for the manifest paths supplied from the selected
+repository root.
+
 ## Schemas and compatibility
 
 Canonical schemas are documented in [docs/schemas.md](docs/schemas.md). Receipt

@@ -1,5 +1,6 @@
 //! Thin std shell for deterministic Nickel exports.
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
@@ -15,6 +16,7 @@ use nickel_export_core::{
     ArtifactMaterial, EvaluationObservation, EvaluatorDescriptor, ExportFormat, ExportManifest,
     ExportRequest, ImportPathPolicy, ResourceLimits, VerifiedManifest, admit_manifest,
     blake3_identity, build_manifest, build_receipt, normalize_request, verify_manifest_fresh,
+    verify_manifest_integrity, verify_supplied_artifacts,
 };
 
 /// Stable non-zero process exit used for all fail-closed shell errors.
@@ -22,7 +24,10 @@ pub const FAILURE_EXIT_CODE: i32 = 2;
 /// Structured shell failure schema.
 pub const SHELL_ERROR_SCHEMA: &str = "onix-nickel-export-shell-error/v1";
 const USAGE: &str = "usage: nickel-export export --spec <request.json> --root <dir> --evaluator <program> --evaluator-identity <identity> --evaluator-version <version> --manifest <relative-path> (--write|--check)";
+const VERIFY_USAGE: &str =
+    "usage: nickel-export verify --manifest <relative-path> --root <dir> [--check-artifacts]";
 const COMMAND_EXPORT: &str = "export";
+const COMMAND_VERIFY: &str = "verify";
 const FIRST_OPTION_INDEX: usize = 2;
 const FLAG_SPEC: &str = "--spec";
 const FLAG_ROOT: &str = "--root";
@@ -32,6 +37,7 @@ const FLAG_EVALUATOR_VERSION: &str = "--evaluator-version";
 const FLAG_MANIFEST: &str = "--manifest";
 const FLAG_WRITE: &str = "--write";
 const FLAG_CHECK: &str = "--check";
+const FLAG_CHECK_ARTIFACTS: &str = "--check-artifacts";
 const NICKEL_PACKAGE_VERSION_PREFIX: &str = "nickel-lang-cli-";
 const SNAPSHOT_DIRECTORY_PREFIX: &str = "nickel-export-snapshot";
 const SNAPSHOT_PACKAGE_CACHE: &str = ".nickel-package-cache";
@@ -82,6 +88,21 @@ struct CliOptions {
     evaluator_version: String,
     manifest: PathBuf,
     mode: Mode,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VerifyOptions {
+    root: PathBuf,
+    manifest: PathBuf,
+    check_artifacts: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct IntegrityReport {
+    schema: &'static str,
+    manifest_identity: String,
+    artifacts_checked: usize,
+    claim: &'static str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -142,8 +163,14 @@ struct EvaluatedExport {
 /// inputs, evaluator failure, receipt rejection, stale checked-in artifacts,
 /// serialization failure, or output-write failure.
 pub fn run(args: &[String]) -> Result<(), ShellError> {
-    let options = parse_args(args)?;
-    execute(&options)
+    match args.get(1).map(String::as_str) {
+        Some(COMMAND_EXPORT) => execute(&parse_args(args)?),
+        Some(COMMAND_VERIFY) => execute_verify(&parse_verify_args(args)?),
+        _ => Err(ShellError::new(
+            "arguments",
+            format!("{USAGE}; {VERIFY_USAGE}"),
+        )),
+    }
 }
 
 fn resource_limits() -> Result<ResourceLimits, ShellError> {
@@ -165,6 +192,107 @@ fn resource_limits() -> Result<ResourceLimits, ShellError> {
         ));
     }
     Ok(limits)
+}
+
+// r[impl nickel_export.core.manifest_integrity_verification]
+fn execute_verify(options: &VerifyOptions) -> Result<(), ShellError> {
+    let limits = resource_limits()?;
+    let root = canonical_root(&options.root)?;
+    let manifest_bytes = read_root_path(
+        &root,
+        &options.manifest,
+        "verify-manifest",
+        limits.max_artifact_bytes,
+    )?;
+    let wire: ExportManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|error| ShellError::new("verify-manifest", error.to_string()))?;
+    let manifest = verify_manifest_integrity(wire)
+        .map_err(|error| ShellError::new("verify-manifest", error.to_string()))?;
+    let artifacts_checked = if options.check_artifacts {
+        verify_manifest_artifact_files(&root, &manifest, &limits)?
+    } else {
+        0
+    };
+    let report = IntegrityReport {
+        schema: "onix-nickel-export-integrity-report/v1",
+        manifest_identity: manifest.manifest_identity.clone(),
+        artifacts_checked,
+        claim: "internal canonical integrity only; freshness and semantic correctness are not proven",
+    };
+    let rendered = serde_json::to_string(&report)
+        .map_err(|error| ShellError::new("verify-report", error.to_string()))?;
+    println!("{rendered}");
+    Ok(())
+}
+
+fn verify_manifest_artifact_files(
+    root: &Path,
+    manifest: &VerifiedManifest,
+    limits: &ResourceLimits,
+) -> Result<usize, ShellError> {
+    let mut paths = BTreeSet::new();
+    for export in &manifest.exports {
+        paths.insert(export.source.path.clone());
+        paths.extend(
+            export
+                .dependencies
+                .iter()
+                .map(|artifact| artifact.path.clone()),
+        );
+        paths.insert(export.output.path.clone());
+    }
+    let bytes = paths
+        .iter()
+        .map(|path| {
+            read_root_file(root, path, "verify-artifact", limits.max_artifact_bytes)
+                .map(|bytes| (path.clone(), bytes))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let materials = bytes
+        .iter()
+        .map(|(path, bytes)| ArtifactMaterial {
+            path,
+            bytes: bytes.as_slice(),
+        })
+        .collect::<Vec<_>>();
+    verify_supplied_artifacts(manifest, &materials)
+        .map_err(|error| ShellError::new("verify-artifact", error.to_string()))
+}
+
+fn parse_verify_args(args: &[String]) -> Result<VerifyOptions, ShellError> {
+    let mut root = None;
+    let mut manifest = None;
+    let mut check_artifacts = false;
+    let mut index = FIRST_OPTION_INDEX;
+    while index < args.len() {
+        match args[index].as_str() {
+            FLAG_ROOT => root = Some(PathBuf::from(next_value(args, &mut index, FLAG_ROOT)?)),
+            FLAG_MANIFEST => {
+                manifest = Some(PathBuf::from(next_value(args, &mut index, FLAG_MANIFEST)?));
+            }
+            FLAG_CHECK_ARTIFACTS if !check_artifacts => check_artifacts = true,
+            FLAG_CHECK_ARTIFACTS => {
+                return Err(ShellError::new(
+                    "arguments",
+                    format!("duplicate `{FLAG_CHECK_ARTIFACTS}`; {VERIFY_USAGE}"),
+                ));
+            }
+            unknown => {
+                return Err(ShellError::new(
+                    "arguments",
+                    format!("unknown argument `{unknown}`; {VERIFY_USAGE}"),
+                ));
+            }
+        }
+        index += 1;
+    }
+    let options = VerifyOptions {
+        root: required(root, FLAG_ROOT)?,
+        manifest: required(manifest, FLAG_MANIFEST)?,
+        check_artifacts,
+    };
+    validate_relative_shell_path(&options.manifest, FLAG_MANIFEST)?;
+    Ok(options)
 }
 
 // r[impl nickel_export.shell.authority]
@@ -1017,6 +1145,30 @@ mod tests {
             parsed.map(|options| options.mode),
             Ok(Mode::Check)
         ));
+    }
+
+    // r[verify nickel_export.core.manifest_integrity_verification]
+    #[test]
+    fn verify_parser_accepts_read_only_artifact_checks_and_rejects_mutation_flags() {
+        let args = [
+            "nickel-export",
+            COMMAND_VERIFY,
+            FLAG_MANIFEST,
+            "generated/manifest.json",
+            FLAG_ROOT,
+            ".",
+            FLAG_CHECK_ARTIFACTS,
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let parsed = parse_verify_args(&args).unwrap_or_else(|error| panic_for_test(&error));
+        assert!(parsed.check_artifacts);
+        assert_eq!(parsed.manifest, PathBuf::from("generated/manifest.json"));
+
+        let mut mutation = args;
+        mutation.push(FLAG_WRITE.to_string());
+        assert!(parse_verify_args(&mutation).is_err());
     }
 
     #[test]

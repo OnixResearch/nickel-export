@@ -751,6 +751,7 @@ pub fn admit_receipt(wire: ExportReceipt) -> Result<AdmittedReceipt, CoreError> 
 /// Returns a deterministic rejection for invalid nested receipts, mixed
 /// evaluators, duplicate or unsorted outputs, or a stale manifest identity.
 #[cfg(feature = "serde")]
+// r[impl nickel_export.core.manifest_integrity_verification]
 pub fn admit_manifest(wire: ExportManifest) -> Result<VerifiedManifest, CoreError> {
     if wire.schema != MANIFEST_SCHEMA || wire.generator != GENERATOR_ID {
         return Err(invalid_wire(
@@ -785,6 +786,60 @@ pub fn admit_manifest(wire: ExportManifest) -> Result<VerifiedManifest, CoreErro
         return Err(CoreError::StaleManifest);
     }
     Ok(VerifiedManifest(wire))
+}
+
+/// Verify one deserialized manifest without evaluating Nickel.
+///
+/// # Errors
+///
+/// Returns deterministic diagnostics when canonical identities or structural
+/// invariants do not match.
+#[cfg(feature = "serde")]
+pub fn verify_manifest_integrity(wire: ExportManifest) -> Result<VerifiedManifest, CoreError> {
+    admit_manifest(wire)
+}
+
+/// Verify exact supplied artifact bytes against one verified manifest.
+///
+/// Returns the number of supplied artifacts checked. The caller chooses a
+/// partial or complete artifact set; this function makes no freshness claim for
+/// artifacts whose bytes were not supplied.
+///
+/// # Errors
+///
+/// Rejects unknown paths, mismatched identities, mismatched lengths, and
+/// over-limit material.
+pub fn verify_supplied_artifacts(
+    manifest: &VerifiedManifest,
+    materials: &[ArtifactMaterial<'_>],
+) -> Result<usize, CoreError> {
+    for material in materials {
+        let actual = artifact_identity(material)?;
+        let mut matched = false;
+        for export in &manifest.exports {
+            let artifacts = core::iter::once(&export.source)
+                .chain(export.dependencies.iter())
+                .chain(core::iter::once(&export.output));
+            for expected in artifacts.filter(|artifact| artifact.path == material.path) {
+                matched = true;
+                if expected != &actual {
+                    return Err(CoreError::MaterialMismatch(vec![error(
+                        "artifact-identity-mismatch",
+                        material.path,
+                        "supplied artifact bytes differ from the manifest",
+                    )]));
+                }
+            }
+        }
+        if !matched {
+            return Err(CoreError::MaterialMismatch(vec![error(
+                "unknown-artifact",
+                material.path,
+                "supplied artifact path is absent from the manifest",
+            )]));
+        }
+    }
+    Ok(materials.len())
 }
 
 /// Build a deterministic manifest while prohibiting mixed evaluators.
