@@ -12,5 +12,6 @@ let Repository = import "../config/repository.ncl" in
     "canonical-schemas",
     "compatibility-projections",
     "fixture-manifests",
+    "proof-evidence",
   ],
 }

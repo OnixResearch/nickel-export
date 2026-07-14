@@ -1,0 +1,97 @@
+{
+  "artifacts": [
+    {
+      "blake3": "0d395222a5a9faf15c6cc624f1c031a9c764811bef40fe7d0a7b1d9bf21e9161",
+      "bytes": 19472,
+      "path": "proofs/identity_primitives.rs",
+      "role": "proof-source"
+    },
+    {
+      "blake3": "c0d0e495b1d81c89b935cab17b0dde316edd4f4a5b151f76dd591f20a6a2df08",
+      "bytes": 91262,
+      "path": "crates/nickel-export-core/src/lib.rs",
+      "role": "implementation-source"
+    },
+    {
+      "blake3": "e098530a98bec6f34067e6e2b240a69bea71df409e7080ed5c8be82cedf17ab5",
+      "bytes": 859,
+      "path": "proofs/correspondence-vectors.json",
+      "role": "correspondence-vectors"
+    },
+    {
+      "blake3": "e5925383d31727e9e98e5554cff03ece51109ce2692072ac2825b4b6099ed8e9",
+      "bytes": 407,
+      "path": "proofs/fixtures/invalid/ambiguous-prefix.rs",
+      "role": "negative-proof-fixture"
+    }
+  ],
+  "axioms_and_assumptions": [
+    "The Verus verifier, Rust compiler, Z3 solver, and execution platform are trusted tooling boundaries.",
+    "BLAKE3 artifact identities rely on collision resistance; no cryptographic property is proved here.",
+    "The component path model abstracts UTF-8 tokenization, trimming, and platform path parsing performed by Rust."
+  ],
+  "claim_scope": "Bounded local Verus models and exact correspondence identities for nickel-export identity primitives.",
+  "correspondence": {
+    "classification": "reviewed-model-map-plus-known-answer-vectors",
+    "statement": "The proof model and Rust implementation are separately maintained. Exact BLAKE3 source identities and shared checked vectors make the reviewed mapping auditable but do not turn it into a formal refinement proof."
+  },
+  "non_claims": [
+    "Does not prove BLAKE3 collision impossibility.",
+    "Does not prove Nickel evaluator correctness, determinism, or equivalence.",
+    "Does not prove filesystem confinement, atomicity, or crash consistency.",
+    "Does not prove verifier or solver soundness.",
+    "Does not prove automatic equivalence between the Verus models and separately maintained Rust.",
+    "Does not transfer Trellis proof claims or certify downstream Octet, Mantle, Valence, or Cairn behavior.",
+    "Does not establish whole-system correctness or release eligibility."
+  ],
+  "proof_claims": [
+    "Fixed-width big-endian u64 encoding is injective.",
+    "Count-prefixed sequences of bounded length-delimited canonical fields are injective before hashing.",
+    "Accepted component-model paths are relative, portable, parent-traversal-free, nonempty, and normalization-idempotent.",
+    "Successful proof-model receipt and manifest constructors preserve their declared schema, non-claim, uniqueness, cohort, diagnostic, and recomputed-identity invariants."
+  ],
+  "schema_version": "onix-nickel-export-proof-evidence/v1",
+  "toolchain": {
+    "provider": "OnixResearch/octet",
+    "provider_revision": "374bd16b26cee2af34211a29bfa531c016811f51",
+    "trellis_reference_paths": [
+      "src/serialize_inj.rs",
+      "scripts/verus.sh",
+      "docs/proof-artifact-manifest.contract.ncl"
+    ],
+    "trellis_reference_revision": "7f99b1b8f0be0fcec5fad6334a2af6fc8746bf25",
+    "verifier_release": "0.2026.05.17.e479cce",
+    "verifier_source_revision": "e479cce36490b8fa4b0fd7755aa742aec354372c"
+  },
+  "validation": {
+    "correspondence_command": [
+      "cargo",
+      "test",
+      "-p",
+      "nickel-export-core",
+      "proof_correspondence_vectors_match_rust_primitives"
+    ],
+    "correspondence_outcome": "verified",
+    "negative_fixture_command": [
+      "octet-production-verus",
+      "--triggers-mode",
+      "silent",
+      "--rlimit",
+      "200",
+      "--crate-type=lib",
+      "proofs/fixtures/invalid/ambiguous-prefix.rs"
+    ],
+    "negative_fixture_outcome": "rejected-as-expected",
+    "proof_command": [
+      "octet-production-verus",
+      "--triggers-mode",
+      "silent",
+      "--rlimit",
+      "200",
+      "--crate-type=lib",
+      "proofs/identity_primitives.rs"
+    ],
+    "proof_outcome": "verified",
+    "verified_obligations": 30
+  }
+}

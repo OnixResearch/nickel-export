@@ -1,0 +1,43 @@
+{
+  "schema_version": "nickel-export-proof-correspondence-v1",
+  "u64_be": [
+    {
+      "value": 0,
+      "encoded": [0, 0, 0, 0, 0, 0, 0, 0]
+    },
+    {
+      "value": 1,
+      "encoded": [0, 0, 0, 0, 0, 0, 0, 1]
+    },
+    {
+      "value": 4294967295,
+      "encoded": [0, 0, 0, 0, 255, 255, 255, 255]
+    }
+  ],
+  "length_delimited": [
+    {
+      "field": [],
+      "encoded": [0, 0, 0, 0, 0, 0, 0, 0]
+    },
+    {
+      "field": [111, 110, 105, 120],
+      "encoded": [0, 0, 0, 0, 0, 0, 0, 4, 111, 110, 105, 120]
+    }
+  ],
+  "accepted_paths": [
+    {
+      "input": " ./config//source.ncl ",
+      "normalized": "config/source.ncl"
+    },
+    {
+      "input": "config/./nested///value.ncl",
+      "normalized": "config/nested/value.ncl"
+    }
+  ],
+  "rejected_paths": [
+    "../secret.ncl",
+    "/absolute.ncl",
+    "windows\\path.ncl",
+    "."
+  ]
+}

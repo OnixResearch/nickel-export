@@ -12,10 +12,14 @@
       url = "github:onixresearch/cairn/a22ea2bff65f16abec4f0f7ba2d7ddc14dc35871";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    octet = {
+      url = "github:OnixResearch/octet?rev=374bd16b26cee2af34211a29bfa531c016811f51";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    { self, nixpkgs, rust-overlay, cairn }:
+    { self, nixpkgs, rust-overlay, cairn, octet }:
     let
       systems = [
         "x86_64-linux"
@@ -76,6 +80,11 @@
             cargo = toolchain;
             rustc = toolchain;
           };
+          octetPackages = octet.packages.${system};
+          octetProductionVerus = builtins.getAttr "octet-production-verus" octetPackages;
+          octetVerusfmt = builtins.getAttr "octet-verusfmt" octetPackages;
+          proofRlimit = 200;
+          proofVerifiedObligations = 30;
           coreCheck =
             name: target:
             rustPlatform.buildRustPackage {
@@ -143,6 +152,91 @@
               touch "$out"
             '';
           };
+
+          identity-proofs = pkgs.runCommand "nickel-export-identity-proofs" {
+            nativeBuildInputs = [
+              octetProductionVerus
+              octetVerusfmt
+              pkgs.b3sum
+              pkgs.coreutils
+              pkgs.diffutils
+              pkgs.gnugrep
+              pkgs.jq
+              pkgs.nickel
+            ];
+            src = self;
+          } ''
+            set -euo pipefail
+            proof_file="$src/proofs/identity_primitives.rs"
+            invalid_fixture="$src/proofs/fixtures/invalid/ambiguous-prefix.rs"
+            evidence="$src/proofs/generated/evidence.json"
+            verifier_root=${octetProductionVerus}/libexec/verus
+
+            octet-production-verus --identity > "$TMPDIR/verifier-identity.txt"
+            grep -F 'proof-verifier: verus@0.2026.05.17.e479cce' "$TMPDIR/verifier-identity.txt" > /dev/null
+            grep -F 'proof-verifier-source-revision: e479cce36490b8fa4b0fd7755aa742aec354372c' \
+              "$TMPDIR/verifier-identity.txt" > /dev/null
+
+            octet-production-verus \
+              --triggers-mode silent \
+              --rlimit ${toString proofRlimit} \
+              --crate-type=lib \
+              --extern vstd="$verifier_root/libvstd.rlib" \
+              --extern builtin="$verifier_root/libverus_builtin.rlib" \
+              --extern builtin_macros="$verifier_root/libverus_builtin_macros.so" \
+              --extern state_machines_macros="$verifier_root/libverus_state_machines_macros.so" \
+              -L "$verifier_root" \
+              --edition 2021 \
+              "$proof_file" 2>&1 | tee "$TMPDIR/proof.log"
+            grep -F 'verification results:: ${toString proofVerifiedObligations} verified, 0 errors' \
+              "$TMPDIR/proof.log" > /dev/null
+
+            set +e
+            octet-production-verus \
+              --triggers-mode silent \
+              --rlimit ${toString proofRlimit} \
+              --crate-type=lib \
+              --extern vstd="$verifier_root/libvstd.rlib" \
+              --extern builtin="$verifier_root/libverus_builtin.rlib" \
+              --extern builtin_macros="$verifier_root/libverus_builtin_macros.so" \
+              --extern state_machines_macros="$verifier_root/libverus_state_machines_macros.so" \
+              -L "$verifier_root" \
+              --edition 2021 \
+              "$invalid_fixture" > "$TMPDIR/invalid-proof.log" 2>&1
+            invalid_status="$?"
+            set -e
+            if test "$invalid_status" -eq 0; then
+              echo "invalid proof fixture unexpectedly verified" >&2
+              exit 1
+            fi
+            grep -F 'postcondition not satisfied' "$TMPDIR/invalid-proof.log" > /dev/null
+            echo "negative proof fixture rejected as expected"
+
+            octet-verusfmt --check --verus-only "$proof_file"
+            nickel typecheck "$src/proofs/evidence.ncl"
+            nickel export --format json "$src/proofs/evidence.ncl" > "$TMPDIR/evidence.json"
+            cmp "$TMPDIR/evidence.json" "$evidence"
+
+            verify_artifact() {
+              role="$1"
+              count="$(jq --arg role "$role" '[.artifacts[] | select(.role == $role)] | length' "$evidence")"
+              test "$count" -eq 1
+              path="$(jq --raw-output --arg role "$role" '.artifacts[] | select(.role == $role) | .path' "$evidence")"
+              expected_blake3="$(jq --raw-output --arg role "$role" '.artifacts[] | select(.role == $role) | .blake3' "$evidence")"
+              expected_bytes="$(jq --raw-output --arg role "$role" '.artifacts[] | select(.role == $role) | .bytes' "$evidence")"
+              actual_blake3="$(b3sum "$src/$path")"
+              actual_blake3="''${actual_blake3%% *}"
+              actual_bytes="$(wc -c < "$src/$path")"
+              test "$actual_blake3" = "$expected_blake3"
+              test "$actual_bytes" -eq "$expected_bytes"
+            }
+
+            verify_artifact proof-source
+            verify_artifact implementation-source
+            verify_artifact correspondence-vectors
+            verify_artifact negative-proof-fixture
+            touch "$out"
+          '';
 
           core-no-std-host = coreCheck "nickel-export-core-no-std-host" null;
           core-no-std-wasm = coreCheck "nickel-export-core-no-std-wasm" "wasm32-unknown-unknown";

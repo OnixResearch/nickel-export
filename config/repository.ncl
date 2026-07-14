@@ -24,6 +24,7 @@ let Contracts = import "contracts.ncl" in
     "cargo-clippy",
     "cargo-format",
     "fuzz-target",
+    "identity-proofs",
     "core-no-std-host",
     "core-no-std-wasm",
     "cairn-policy",

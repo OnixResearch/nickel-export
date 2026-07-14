@@ -1563,6 +1563,36 @@ mod tests {
     const SOURCE: &[u8] = b"{ value = 1 }\n";
     const OUTPUT: &[u8] = b"{\"value\":1}\n";
     const DEPENDENCY: &[u8] = b"{ enabled = true }\n";
+    const PROOF_CORRESPONDENCE_SCHEMA: &str = "nickel-export-proof-correspondence-v1";
+    const PROOF_CORRESPONDENCE_VECTORS: &str =
+        include_str!("../../../proofs/correspondence-vectors.json");
+
+    #[derive(serde::Deserialize)]
+    struct ProofCorrespondenceVectors {
+        schema_version: String,
+        u64_be: Vec<U64CorrespondenceVector>,
+        length_delimited: Vec<LengthDelimitedCorrespondenceVector>,
+        accepted_paths: Vec<AcceptedPathCorrespondenceVector>,
+        rejected_paths: Vec<String>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct U64CorrespondenceVector {
+        value: u64,
+        encoded: Vec<u8>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct LengthDelimitedCorrespondenceVector {
+        field: Vec<u8>,
+        encoded: Vec<u8>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct AcceptedPathCorrespondenceVector {
+        input: String,
+        normalized: String,
+    }
 
     fn request(destination: &str) -> ExportRequest {
         ExportRequest {
@@ -1666,6 +1696,38 @@ mod tests {
         assert_eq!(blake3_identity(&receipt_bytes), receipt.receipt_identity);
         assert_eq!(blake3_identity(&manifest_bytes), manifest.manifest_identity);
         assert_eq!(verify_manifest_fresh(&manifest, &manifest), Ok(()));
+    }
+
+    // r[verify nickel_export.proof.identity_primitives]
+    #[test]
+    fn proof_correspondence_vectors_match_rust_primitives() {
+        let vectors: ProofCorrespondenceVectors =
+            serde_json::from_str(PROOF_CORRESPONDENCE_VECTORS).unwrap_or_else(panic_for_test);
+        assert_eq!(vectors.schema_version, PROOF_CORRESPONDENCE_SCHEMA);
+
+        for vector in vectors.u64_be {
+            let mut encoded = Vec::new();
+            append_count(
+                &mut encoded,
+                usize::try_from(vector.value).unwrap_or_else(panic_for_test),
+            )
+            .unwrap_or_else(panic_for_test);
+            assert_eq!(encoded, vector.encoded);
+        }
+        for vector in vectors.length_delimited {
+            let mut encoded = Vec::new();
+            append_bytes(&mut encoded, &vector.field).unwrap_or_else(panic_for_test);
+            assert_eq!(encoded, vector.encoded);
+        }
+        for vector in vectors.accepted_paths {
+            assert_eq!(
+                normalize_relative_path(&vector.input),
+                Ok(vector.normalized)
+            );
+        }
+        for path in vectors.rejected_paths {
+            assert!(normalize_relative_path(&path).is_err());
+        }
     }
 
     // r[verify nickel_export.core.declared_input_identity]

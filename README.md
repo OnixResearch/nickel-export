@@ -17,6 +17,7 @@ The repository separates a pure core from evaluator and filesystem authority:
 
 - `nickel-export-core` is `#![no_std]` + `alloc`. It strictly decodes wire values, normalizes requests, validates complete declared dependency sets, computes BLAKE3 identities, rejects error diagnostics and secret-like material, and produces opaque `AdmittedReceipt` and `VerifiedManifest` states. Only admitted evidence reaches freshness checks or legacy Octet and Mantle projections. It never evaluates Nickel or performs I/O.
 - `nickel-export` is a thin std shell. It captures declared files into a private path-preserving snapshot, removes ambient evaluator environment authority, invokes an explicit external Nickel program under the checked `config/resource-limits.ncl` profile, applies an optional declared contract, writes generated artifacts, and implements fail-closed `--check` mode.
+- `proofs/` contains bounded Verus models for pre-hash encoding injectivity, path safety/idempotence, and admitted-state preservation. Exact BLAKE3 source identities and checked correspondence vectors make the separate Rust/model mapping auditable without claiming formal refinement.
 
 ## Claim boundary
 
@@ -91,6 +92,7 @@ cargo test --workspace
 cargo check -p nickel-export-core --no-default-features --target wasm32-unknown-unknown
 cargo clippy --workspace --all-targets -- -D warnings
 cargo check --manifest-path fuzz/Cargo.toml
+nix build .#checks.x86_64-linux.identity-proofs --no-link -L
 nix flake check -L
 ```
 
@@ -111,3 +113,4 @@ The initial extraction compared these codebases at fixed revisions. They remain 
 - [Cairn policy export shell at `7e9ed636203395b3808a65962f6bb6da60f57268`](https://github.com/OnixResearch/cairn/blob/7e9ed636203395b3808a65962f6bb6da60f57268/crates/cairn-cli/src/policy.rs)
 - [Trellis policy checker at `fe008bda65baf9a335fe837294837427973a4ab4`](https://github.com/OnixResearch/trellis/blob/fe008bda65baf9a335fe837294837427973a4ab4/scripts/check-verification-policy.rs)
 - [Animus generation checks at `f1a8995dca714938042d66336477aa72c518e0a2`](https://github.com/OnixResearch/animus/blob/f1a8995dca714938042d66336477aa72c518e0a2/flake.nix)
+- [Trellis serialization-injectivity proof patterns at `7f99b1b8f0be0fcec5fad6334a2af6fc8746bf25`](https://github.com/OnixResearch/trellis/blob/7f99b1b8f0be0fcec5fad6334a2af6fc8746bf25/src/serialize_inj.rs)

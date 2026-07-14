@@ -4,7 +4,8 @@
     "nix-package",
     "canonical-schemas",
     "compatibility-projections",
-    "fixture-manifests"
+    "fixture-manifests",
+    "proof-evidence"
   ],
   "claim_boundary": [
     "No Nickel evaluation occurs in nickel-export-core.",
@@ -24,6 +25,7 @@
     "cargo-clippy",
     "cargo-format",
     "fuzz-target",
+    "identity-proofs",
     "core-no-std-host",
     "core-no-std-wasm",
     "cairn-policy",

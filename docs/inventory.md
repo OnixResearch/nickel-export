@@ -15,3 +15,11 @@ Inventory baseline: 2026-07-13.
 The shared layer is request shape, exact artifact identity, a versioned declared-input fingerprint, evaluator descriptors, structured diagnostics, deterministic receipts/manifests, freshness comparison, conservative secret handling, and compatibility projections.
 
 The shared layer explicitly excludes Nickel evaluator semantics, import resolution authority, filesystem roots, output destination authority, consumer contracts and policy meaning, build authority, lifecycle gates, proof claims, and release eligibility.
+
+## Proof-pattern reference
+
+The bounded identity proof work reviewed Trellis `src/serialize_inj.rs`,
+`scripts/verus.sh`, and `docs/proof-artifact-manifest.contract.ncl` at
+`7f99b1b8f0be0fcec5fad6334a2af6fc8746bf25`. Nickel-export reruns its own
+project-local Verus source with a separately recorded correspondence boundary;
+no Trellis proof or whole-system claim transfers into this repository.
