@@ -98,7 +98,7 @@ nix build .#checks.x86_64-linux.identity-proofs --no-link -L
 nix flake check -L
 ```
 
-The typed repository and release profiles live in `config/repository.ncl` and `release/profile.ncl`. Checked JSON exports are freshness-tested. The pinned Nix input, Rust toolchain, Nickel evaluator cohort, AGPL license, positive/negative fixtures, host/Wasm core checks, and CLI tamper tests make the release boundary reproducible.
+The typed repository and release profiles live in `config/repository.ncl` and `release/profile.ncl`. Checked JSON exports are freshness-tested. The pinned Nix input, Rust toolchain, Nickel evaluator cohort, package license map, positive/negative fixtures, host/Wasm core checks, and CLI tamper tests make the release boundary reproducible.
 
 Distribution is through immutable Git revisions and Nix inputs. Both Cargo packages set `publish = false`; crates.io is not a release channel for this project.
 
@@ -106,7 +106,9 @@ See [docs/migration.md](docs/migration.md) for the dual-run consumer cutover and
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](LICENSE).
+`nickel-export-core` is `MPL-2.0`; the `nickel-export` evaluator/file shell is `AGPL-3.0-or-later`. Complete texts and the package map are in [LICENSE](LICENSE), [LICENSES](LICENSES), and the typed [repository contract](config/repository.ncl).
+
+Package licensing is distribution metadata and is not included in canonical export identity unless a versioned schema explicitly adds it. Earlier grants and third-party terms remain intact; the split does not transfer evaluator authority into the core.
 
 ## References
 

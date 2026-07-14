@@ -19,6 +19,26 @@
     "version": "nickel-lang-cli-1.17.0"
   },
   "license": "AGPL-3.0-or-later",
+  "license_artifacts": [
+    {
+      "license": "MPL-2.0",
+      "path": "LICENSES/MPL-2.0.txt"
+    },
+    {
+      "license": "AGPL-3.0-or-later",
+      "path": "LICENSE"
+    }
+  ],
+  "package_licenses": [
+    {
+      "license": "MPL-2.0",
+      "package": "nickel-export-core"
+    },
+    {
+      "license": "AGPL-3.0-or-later",
+      "package": "nickel-export"
+    }
+  ],
   "project": "nickel-export",
   "replay": {
     "non_claim": "Selected replay agreement is bounded empirical evidence, not proof of universal determinism.",

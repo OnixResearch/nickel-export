@@ -5,12 +5,32 @@
     "version": "nickel-lang-cli-1.17.0"
   },
   "license": "AGPL-3.0-or-later",
+  "license_artifacts": [
+    {
+      "license": "MPL-2.0",
+      "path": "LICENSES/MPL-2.0.txt"
+    },
+    {
+      "license": "AGPL-3.0-or-later",
+      "path": "LICENSE"
+    }
+  ],
   "name": "nickel-export",
   "non_claims": [
     "No Nickel evaluation occurs in nickel-export-core.",
     "A receipt does not prove evaluator equivalence, deployability, build success, product-policy conformance, or release eligibility.",
     "Snapshot-only external evaluator receipts do not claim sandbox confinement or an evaluator-observed dependency closure.",
     "A declared input identity is not a safe cache key."
+  ],
+  "package_licenses": [
+    {
+      "license": "MPL-2.0",
+      "package": "nickel-export-core"
+    },
+    {
+      "license": "AGPL-3.0-or-later",
+      "package": "nickel-export"
+    }
   ],
   "packages": [
     "nickel-export-core",

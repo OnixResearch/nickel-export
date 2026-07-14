@@ -1,0 +1,10 @@
+# kind	path	expected value or marker
+workspace-package-set	Cargo.toml	strict
+package	crates/nickel-export-core/Cargo.toml	MPL-2.0
+package	crates/nickel-export/Cargo.toml	AGPL-3.0-or-later
+artifact	LICENSES/MPL-2.0.txt	Mozilla Public License Version 2.0
+artifact	LICENSE	GNU AFFERO GENERAL PUBLIC LICENSE
+contains	config/repository.ncl	{ package = "nickel-export-core", license = "MPL-2.0" }
+contains	config/generated/repository.json	"package_licenses"
+contains	release/generated/profile.json	"license_artifacts"
+forbid	crates/nickel-export-core/Cargo.toml	nickel-export =

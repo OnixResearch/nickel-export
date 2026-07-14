@@ -270,6 +270,15 @@
             nickel typecheck config/repository.ncl
             nickel typecheck config/resource-limits.ncl
             nickel typecheck release/profile.ncl
+            nickel export --format json config/tests/license-map.valid.ncl > /dev/null
+            if nickel export --format json config/tests/license-map.unknown-package.invalid.ncl > /dev/null 2>&1; then
+              echo "unknown package license mapping unexpectedly passed" >&2
+              exit 1
+            fi
+            if nickel export --format json config/tests/license-map.reversed.invalid.ncl > /dev/null 2>&1; then
+              echo "reversed package license mapping unexpectedly passed" >&2
+              exit 1
+            fi
             nickel export --format json config/repository.ncl > "$TMPDIR/repository.json"
             nickel export --format json config/resource-limits.ncl > "$TMPDIR/resource-limits.json"
             nickel export --format json release/profile.ncl > "$TMPDIR/release-profile.json"

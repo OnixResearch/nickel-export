@@ -4,6 +4,14 @@ let Contracts = import "contracts.ncl" in
   repository = "https://github.com/OnixResearch/nickel-export",
   license = "AGPL-3.0-or-later",
   packages = ["nickel-export-core", "nickel-export"],
+  package_licenses = [
+    { package = "nickel-export-core", license = "MPL-2.0" },
+    { package = "nickel-export", license = "AGPL-3.0-or-later" },
+  ],
+  license_artifacts = [
+    { license = "MPL-2.0", path = "LICENSES/MPL-2.0.txt" },
+    { license = "AGPL-3.0-or-later", path = "LICENSE" },
+  ],
   schemas = [
     "onix-nickel-export-request/v1",
     "onix-nickel-export-declared-input/v1",
