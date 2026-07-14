@@ -102,6 +102,7 @@ fn execute(options: &CliOptions) -> Result<(), ShellError> {
     })?;
     let request = normalize_request(&request)
         .map_err(|error| ShellError::new("validate-spec", error.to_string()))?;
+    validate_shell_contract(&request)?;
     let source_bytes = read_root_file(&root, &request.source, "read-source")?;
     let dependency_bytes = request
         .dependencies
@@ -263,6 +264,24 @@ fn require_nonempty(value: &str, flag: &str) -> Result<(), ShellError> {
         ))
     } else {
         Ok(())
+    }
+}
+
+fn validate_shell_contract(request: &ExportRequest) -> Result<(), ShellError> {
+    if request.contract.is_empty() {
+        return Ok(());
+    }
+    validate_relative_shell_path(Path::new(&request.contract), "contract")?;
+    if request.dependencies.contains(&request.contract) {
+        Ok(())
+    } else {
+        Err(ShellError::new(
+            "validate-spec",
+            format!(
+                "CLI contract file `{}` must also be declared as an exact dependency",
+                request.contract
+            ),
+        ))
     }
 }
 
@@ -565,6 +584,28 @@ mod tests {
             .unwrap_or_default();
         unsafe_spec[spec_index] = "../secret.ncl".to_string();
         assert!(parse_args(&unsafe_spec).is_err());
+    }
+
+    #[test]
+    fn cli_contract_files_must_be_safe_declared_dependencies() {
+        let mut request = ExportRequest {
+            schema: nickel_export_core::REQUEST_SCHEMA.to_string(),
+            family_id: "tests.config".to_string(),
+            source: "config/source.ncl".to_string(),
+            dependencies: Vec::new(),
+            import_paths: Vec::new(),
+            selector: String::new(),
+            contract: "DynamicEvidenceProfiles".to_string(),
+            format: ExportFormat::Json,
+            destination: "generated/config.json".to_string(),
+            allow_secret_material: false,
+        };
+        assert!(validate_shell_contract(&request).is_err());
+        request.contract = "config/contract.ncl".to_string();
+        request.dependencies.push(request.contract.clone());
+        assert!(validate_shell_contract(&request).is_ok());
+        request.contract = "../contract.ncl".to_string();
+        assert!(validate_shell_contract(&request).is_err());
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 ## Request: `onix-nickel-export-request/v1`
 
-A request records `family_id`, repository-relative `source`, complete declared `dependencies`, evaluator `import_paths`, optional `selector`, optional repository-relative `contract`, native `format`, repository-relative `destination`, and explicit `allow_secret_material` policy. Paths are normalized, parent traversal and absolute paths are rejected, lists are sorted and deduplicated, and a contract must be included in the dependency set.
+A request records `family_id`, repository-relative `source`, complete declared `dependencies`, evaluator `import_paths`, optional `selector`, optional consumer-owned `contract` metadata, native `format`, repository-relative `destination`, and explicit `allow_secret_material` policy. Artifact paths are normalized, parent traversal and absolute paths are rejected, and path lists are sorted and deduplicated. The external CLI interprets non-empty contract metadata as a repository-relative contract file and requires that file in the dependency set; embedded adapters may use a stable contract label and supply captured diagnostics directly.
 
 ## Diagnostic: `onix-nickel-export-diagnostic/v1`
 
@@ -21,7 +21,7 @@ A receipt binds:
 - evaluator identity, exact version/package identity, sorted options, and dependency-observation policy;
 - sorted non-fatal diagnostics and an explicit non-claim.
 
-The core rejects source/output path mismatches, incomplete dependency material, undeclared observed imports, incomplete evaluator-observed closures, error diagnostics, unsafe paths, and conservative secret markers without opt-in.
+The core rejects source/output path mismatches, incomplete dependency material, undeclared observed imports, incomplete evaluator-observed closures, error diagnostics, unsafe artifact paths, and conservative secret markers in authored source/dependencies without opt-in.
 
 ## Manifest: `onix-nickel-export-manifest/v1`
 

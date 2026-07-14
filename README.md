@@ -15,7 +15,7 @@ An accepted receipt proves exact declared input and output identities under one 
 
 ## Usage
 
-A request is typed by `onix-nickel-export-request/v1` and names a source, all exact dependencies, import paths, optional selector, optional contract file, native output format, and destination. Contract files must also appear in `dependencies` so their bytes are bound into the receipt.
+A request is typed by `onix-nickel-export-request/v1` and names a source, all exact dependencies, import paths, optional selector, optional consumer-owned contract metadata, native output format, and destination. The external CLI interprets non-empty contract metadata as a repository-relative contract file and requires it in `dependencies`; embedded consumers may retain a reviewed contract label while supplying captured diagnostics directly.
 
 ```console
 nix develop

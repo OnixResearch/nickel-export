@@ -17,7 +17,7 @@ r[nickel_export.core.evaluator_neutral] `nickel-export-core` MUST compile with `
 
 ### Requirement: Exact identities bind complete declared material
 
-r[nickel_export.core.identity] The core MUST bind exact source, complete declared dependency, selector, contract, evaluator descriptor, output format, destination, and output bytes into versioned receipts using BLAKE3 for project-owned identities.
+r[nickel_export.core.identity] The core MUST bind exact source, complete declared dependency, selector, consumer-owned contract metadata, evaluator descriptor, output format, destination, and output bytes into versioned receipts using BLAKE3 for project-owned identities.
 
 #### Scenario: Any exact artifact changes
 - GIVEN an admitted receipt input

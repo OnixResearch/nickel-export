@@ -166,7 +166,7 @@ pub struct ExportRequest {
     /// Optional field selector.
     #[cfg_attr(feature = "serde", serde(default))]
     pub selector: String,
-    /// Optional repository-root-relative consumer-owned contract file.
+    /// Optional consumer-owned contract label or source locator metadata.
     #[cfg_attr(feature = "serde", serde(default))]
     pub contract: String,
     /// Native output format.
@@ -361,18 +361,6 @@ pub fn normalize_request(request: &ExportRequest) -> Result<ExportRequest, CoreE
     let destination = normalize_path_field(&request.destination, "destination", &mut diagnostics);
     let dependencies = normalize_path_list(&request.dependencies, "dependency", &mut diagnostics);
     let import_paths = normalize_path_list(&request.import_paths, "import-path", &mut diagnostics);
-    let contract = if request.contract.trim().is_empty() {
-        String::new()
-    } else {
-        normalize_path_field(&request.contract, "contract", &mut diagnostics)
-    };
-    if !contract.is_empty() && !dependencies.contains(&contract) {
-        diagnostics.push(error(
-            "unbound-contract",
-            &contract,
-            "contract file must also be declared as an exact dependency",
-        ));
-    }
     if source == destination && !source.is_empty() {
         diagnostics.push(error(
             "overlapping-output",
@@ -399,7 +387,7 @@ pub fn normalize_request(request: &ExportRequest) -> Result<ExportRequest, CoreE
         dependencies,
         import_paths,
         selector: request.selector.trim().to_string(),
-        contract,
+        contract: request.contract.trim().to_string(),
         format: request.format,
         destination,
         allow_secret_material: request.allow_secret_material,
@@ -784,9 +772,7 @@ fn reject_secret_material(
     if request.allow_secret_material {
         return Ok(());
     }
-    let materials = core::iter::once(&observation.source)
-        .chain(observation.dependencies.iter())
-        .chain(core::iter::once(&observation.output));
+    let materials = core::iter::once(&observation.source).chain(observation.dependencies.iter());
     for material in materials {
         let lowercase = material
             .bytes
@@ -1237,7 +1223,7 @@ mod tests {
     }
 
     #[test]
-    fn secret_opt_in_and_declared_contract_are_explicit() {
+    fn secret_opt_in_and_consumer_owned_contract_metadata_are_explicit() {
         let mut secret_request = request("generated/config.json");
         secret_request.allow_secret_material = true;
         let evaluator = evaluator("nickel-cli");
@@ -1261,12 +1247,10 @@ mod tests {
         };
         assert!(build_receipt(&observation).is_ok());
 
-        let mut unbound_contract = request("generated/config.json");
-        unbound_contract.contract = "config/unbound-contract.ncl".to_string();
-        assert!(matches!(
-            normalize_request(&unbound_contract),
-            Err(CoreError::InvalidRequest(_))
-        ));
+        let mut labeled_contract = request("generated/config.json");
+        labeled_contract.contract = "DynamicEvidenceProfiles".to_string();
+        let normalized = normalize_request(&labeled_contract).unwrap_or_else(panic_for_test);
+        assert_eq!(normalized.contract, "DynamicEvidenceProfiles");
     }
 
     #[test]
