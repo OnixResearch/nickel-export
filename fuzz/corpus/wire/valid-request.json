@@ -1,0 +1,12 @@
+{
+  "schema": "onix-nickel-export-request/v1",
+  "family_id": "fuzz.valid",
+  "source": "config/source.ncl",
+  "dependencies": [],
+  "import_paths": [],
+  "selector": "",
+  "contract": "",
+  "format": "json",
+  "destination": "generated/config.json",
+  "allow_secret_material": false
+}

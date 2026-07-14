@@ -1776,6 +1776,46 @@ mod tests {
         assert!(matches!(result, Err(CoreError::InvalidRequest(_))));
     }
 
+    // r[verify nickel_export.validation.generative_rails]
+    #[test]
+    fn generated_normalization_properties_are_idempotent_and_order_invariant() {
+        const GENERATED_CASES: usize = 64;
+        const GENERATED_DEPENDENCY_VARIANTS: usize = 4;
+
+        for case in 0..GENERATED_CASES {
+            let dependency_count = case % GENERATED_DEPENDENCY_VARIANTS;
+            let dependencies = (0..dependency_count)
+                .map(|index| format!("generated/dependency-{index}.ncl"))
+                .collect::<Vec<_>>();
+            let mut generated = request("generated/config.json");
+            generated.dependencies = dependencies.clone();
+            generated.contract = String::new();
+            let normalized = normalize_request(&generated).unwrap_or_else(panic_for_test);
+            let repeated = normalize_request(&normalized).unwrap_or_else(panic_for_test);
+            assert_eq!(normalized, repeated);
+
+            let mut reversed = generated;
+            reversed.dependencies.reverse();
+            let reversed = normalize_request(&reversed).unwrap_or_else(panic_for_test);
+            assert_eq!(normalized.dependencies, reversed.dependencies);
+        }
+    }
+
+    #[test]
+    fn checked_fuzz_corpus_has_positive_and_negative_neighbors() {
+        let valid = include_bytes!("../../../fuzz/corpus/wire/valid-request.json");
+        let invalid = include_bytes!("../../../fuzz/corpus/wire/unknown-field-request.json");
+        let valid_request = serde_json::from_slice::<ExportRequest>(valid);
+        let invalid_request = serde_json::from_slice::<ExportRequest>(invalid);
+        assert!(valid_request.is_ok());
+        assert!(invalid_request.is_err());
+        let normalized = valid_request
+            .as_ref()
+            .map_err(|_| CoreError::Serialization)
+            .and_then(normalize_request);
+        assert!(normalized.is_ok());
+    }
+
     #[test]
     fn normalizes_dependency_order_before_identity() {
         let mut request = request("generated/config.json");

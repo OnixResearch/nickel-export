@@ -23,6 +23,7 @@ let Contracts = import "contracts.ncl" in
     "cargo-test",
     "cargo-clippy",
     "cargo-format",
+    "fuzz-target",
     "core-no-std-host",
     "core-no-std-wasm",
     "cairn-policy",

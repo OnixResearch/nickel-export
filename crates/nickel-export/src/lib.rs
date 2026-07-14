@@ -193,13 +193,30 @@ struct EvaluatedExport {
     evaluator: EvaluatorDescriptor,
 }
 
-/// Execute the CLI shell around the pure core.
+/// Parse arbitrary CLI arguments without performing side effects.
+///
+/// This is a fuzzing and embedding seam; `true` means one supported command
+/// parsed completely, not that its referenced files or evaluator are valid.
+#[doc(hidden)]
+#[must_use]
+pub fn validate_cli_arguments(args: &[String]) -> bool {
+    if args.len() > ResourceLimits::DEFAULT.max_artifacts {
+        return false;
+    }
+    match args.get(1).map(String::as_str) {
+        Some(COMMAND_EXPORT) => parse_args(args).is_ok(),
+        Some(COMMAND_VERIFY) => parse_verify_args(args).is_ok(),
+        _ => false,
+    }
+}
+
+/// Execute one supported CLI command.
 ///
 /// # Errors
 ///
-/// Returns a staged error for malformed arguments, unsafe paths, unreadable
-/// inputs, evaluator failure, receipt rejection, stale checked-in artifacts,
-/// serialization failure, or output-write failure.
+/// Returns a staged error for invalid arguments, unsafe or unavailable files,
+/// evaluator failure, evidence rejection, verification failure, lock
+/// contention, or materialization failure.
 pub fn run(args: &[String]) -> Result<(), ShellError> {
     match args.get(1).map(String::as_str) {
         Some(COMMAND_EXPORT) => execute(&parse_args(args)?),

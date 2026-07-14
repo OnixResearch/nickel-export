@@ -90,6 +90,7 @@ These are adapters, not alternate semantic owners. Consumer evaluation strategy,
 cargo test --workspace
 cargo check -p nickel-export-core --no-default-features --target wasm32-unknown-unknown
 cargo clippy --workspace --all-targets -- -D warnings
+cargo check --manifest-path fuzz/Cargo.toml
 nix flake check -L
 ```
 

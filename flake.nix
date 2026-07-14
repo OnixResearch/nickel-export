@@ -128,8 +128,24 @@
             set -eu
             cd "$src"
             cargo fmt --all -- --check
+            cargo fmt --manifest-path fuzz/Cargo.toml -- --check
             touch "$out"
           '';
+
+          fuzz-target = rustPlatform.buildRustPackage {
+            pname = "nickel-export-fuzz-target";
+            version = "0.1.0";
+            src = self;
+            cargoLock.lockFile = ./fuzz/Cargo.lock;
+            cargoBuildFlags = [
+              "--manifest-path"
+              "fuzz/Cargo.toml"
+            ];
+            doCheck = false;
+            installPhase = ''
+              touch "$out"
+            '';
+          };
 
           core-no-std-host = coreCheck "nickel-export-core-no-std-host" null;
           core-no-std-wasm = coreCheck "nickel-export-core-no-std-wasm" "wasm32-unknown-unknown";
