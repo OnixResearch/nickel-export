@@ -4,10 +4,12 @@ let EvaluatorMebibytes = 128 in
 let EvaluatorTimeoutMilliseconds = 30000 in
 let EvaluatorPollMilliseconds = 10 in
 let MaximumArtifacts = 4096 in
+let MaximumReplayRuns = 4 in
 let MaximumPathBytes = 4096 in
 let MaximumOptionBytes = 16384 in
 let ResourceLimits = {
   max_artifacts | Number,
+  max_replay_runs | Number,
   max_artifact_bytes | Number,
   max_evaluator_bytes | Number,
   max_stderr_bytes | Number,
@@ -19,6 +21,7 @@ let ResourceLimits = {
 } in
 {
   max_artifacts = MaximumArtifacts,
+  max_replay_runs = MaximumReplayRuns,
   max_artifact_bytes = ArtifactMebibytes * MebibyteBytes,
   max_evaluator_bytes = EvaluatorMebibytes * MebibyteBytes,
   max_stderr_bytes = MebibyteBytes,

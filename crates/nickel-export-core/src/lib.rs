@@ -43,6 +43,8 @@ pub const OCTET_GENERATOR_ID: &str = "octet-standards.nickel-export-helper/v1";
 pub const MANTLE_NON_CLAIM: &str = "Nickel export success proves only the declared evaluation output digest under the recorded evaluator descriptor; it does not prove deployability, frontend correctness, or build success";
 /// Bound on user-provided lists before allocation-heavy processing.
 pub const MAX_ARTIFACTS: usize = 4_096;
+/// Default maximum sequential evaluator runs in one replay request.
+pub const DEFAULT_MAX_REPLAY_RUNS: usize = 4;
 /// Default bytes in one mebibyte for named limit construction.
 pub const MEBIBYTE_BYTES: u64 = 1_048_576;
 /// Default bytes in one mebibyte for platform-sized limit construction.
@@ -92,6 +94,8 @@ const SECRET_MARKERS: &[&[u8]] = &[
 pub struct ResourceLimits {
     /// Maximum declared artifacts or list entries.
     pub max_artifacts: usize,
+    /// Maximum sequential evaluator runs in one replay request.
+    pub max_replay_runs: usize,
     /// Maximum bytes for one source, dependency, output, or manifest artifact.
     pub max_artifact_bytes: u64,
     /// Maximum evaluator executable bytes.
@@ -114,6 +118,7 @@ impl ResourceLimits {
     /// Repository default resource profile.
     pub const DEFAULT: Self = Self {
         max_artifacts: MAX_ARTIFACTS,
+        max_replay_runs: DEFAULT_MAX_REPLAY_RUNS,
         max_artifact_bytes: DEFAULT_MAX_ARTIFACT_BYTES,
         max_evaluator_bytes: DEFAULT_MAX_EVALUATOR_BYTES,
         max_stderr_bytes: DEFAULT_MAX_STDERR_BYTES,

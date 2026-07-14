@@ -23,7 +23,7 @@ use nickel_export_core::{
 pub const FAILURE_EXIT_CODE: i32 = 2;
 /// Structured shell failure schema.
 pub const SHELL_ERROR_SCHEMA: &str = "onix-nickel-export-shell-error/v1";
-const USAGE: &str = "usage: nickel-export export --spec <request.json> --root <dir> --evaluator <program> --evaluator-identity <identity> --evaluator-version <version> --manifest <relative-path> (--write|--check)";
+const USAGE: &str = "usage: nickel-export export --spec <request.json> --root <dir> --evaluator <program> --evaluator-identity <identity> --evaluator-version <version> --manifest <relative-path> [--replay-runs <count>] (--write|--check)";
 const VERIFY_USAGE: &str =
     "usage: nickel-export verify --manifest <relative-path> --root <dir> [--check-artifacts]";
 const COMMAND_EXPORT: &str = "export";
@@ -38,7 +38,11 @@ const FLAG_MANIFEST: &str = "--manifest";
 const FLAG_WRITE: &str = "--write";
 const FLAG_CHECK: &str = "--check";
 const FLAG_CHECK_ARTIFACTS: &str = "--check-artifacts";
+const FLAG_REPLAY_RUNS: &str = "--replay-runs";
 const NICKEL_PACKAGE_VERSION_PREFIX: &str = "nickel-lang-cli-";
+const REPLAY_REPORT_SCHEMA: &str = "onix-nickel-export-replay-report/v1";
+const REPLAY_MINIMUM_RUNS: usize = 2;
+const REPLAY_NON_CLAIM: &str = "Replay agreement applies only to the selected sequential runs under the recorded captured plan, evaluator artifact, and resource profile; it does not prove future or universal determinism";
 const SNAPSHOT_DIRECTORY_PREFIX: &str = "nickel-export-snapshot";
 const SNAPSHOT_PACKAGE_CACHE: &str = ".nickel-package-cache";
 const SNAPSHOT_CREATE_ATTEMPTS: u64 = 64;
@@ -58,6 +62,8 @@ pub struct ShellError {
     schema: &'static str,
     stage: &'static str,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay: Option<Box<ReplayReport>>,
 }
 
 impl ShellError {
@@ -66,7 +72,13 @@ impl ShellError {
             schema: SHELL_ERROR_SCHEMA,
             stage,
             message: message.into(),
+            replay: None,
         }
+    }
+
+    fn with_replay(mut self, replay: ReplayReport) -> Self {
+        self.replay = Some(Box::new(replay));
+        self
     }
 }
 
@@ -92,6 +104,7 @@ struct CliOptions {
     evaluator_identity: String,
     evaluator_version: String,
     manifest: PathBuf,
+    replay_runs: Option<usize>,
     mode: Mode,
 }
 
@@ -108,6 +121,80 @@ struct IntegrityReport {
     manifest_identity: String,
     artifacts_checked: usize,
     claim: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReplayVerdict {
+    Agreement,
+    Divergence,
+    Failure,
+}
+
+impl ReplayVerdict {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Agreement => "agreement",
+            Self::Divergence => "divergence",
+            Self::Failure => "failure",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReplayRunStatus {
+    Success,
+    Failure,
+}
+
+impl ReplayRunStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ReplayProfile {
+    requested_runs: usize,
+    maximum_runs: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ReplayRunOutcome {
+    run: usize,
+    status: ReplayRunStatus,
+    output_identity: String,
+    output_bytes: u64,
+    failure_stage: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ReplayReport {
+    schema: &'static str,
+    profile: ReplayProfile,
+    plan_identity: String,
+    evaluator_artifact_identity: String,
+    resource_profile_identity: String,
+    outcomes: Vec<ReplayRunOutcome>,
+    verdict: ReplayVerdict,
+    report_identity: String,
+    non_claim: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ReplayAttempt {
+    Success(Vec<u8>),
+    Failure(&'static str),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReplayAssessment {
+    report: ReplayReport,
+    agreed_output: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -189,8 +276,9 @@ struct LoadedExport {
 
 #[derive(Debug)]
 struct EvaluatedExport {
-    output: Output,
+    output_bytes: Vec<u8>,
     evaluator: EvaluatorDescriptor,
+    replay: Option<ReplayReport>,
 }
 
 /// Parse arbitrary CLI arguments without performing side effects.
@@ -232,6 +320,7 @@ fn resource_limits() -> Result<ResourceLimits, ShellError> {
     let limits: ResourceLimits = serde_json::from_str(DEFAULT_RESOURCE_LIMITS_JSON)
         .map_err(|error| ShellError::new("resource-limits", error.to_string()))?;
     if limits.max_artifacts == 0
+        || limits.max_replay_runs == 0
         || limits.max_artifact_bytes == 0
         || limits.max_evaluator_bytes == 0
         || limits.max_stderr_bytes == 0
@@ -372,7 +461,7 @@ fn execute(options: &CliOptions) -> Result<(), ShellError> {
         dependencies,
         output: ArtifactMaterial {
             path: &loaded.request.destination,
-            bytes: &evaluated.output.stdout,
+            bytes: &evaluated.output_bytes,
         },
         evaluator: &evaluated.evaluator,
         observed_dependencies: Vec::new(),
@@ -386,18 +475,23 @@ fn execute(options: &CliOptions) -> Result<(), ShellError> {
         Mode::Write => write_artifacts(
             &loaded.root,
             &loaded.request,
-            &evaluated.output.stdout,
+            &evaluated.output_bytes,
             &options.manifest,
             &manifest,
         )?,
         Mode::Check => check_artifacts(
             &loaded.root,
             &loaded.request,
-            &evaluated.output.stdout,
+            &evaluated.output_bytes,
             &options.manifest,
             &manifest,
             &limits,
         )?,
+    }
+    if let Some(replay) = &evaluated.replay {
+        let rendered_replay = serde_json::to_string(replay)
+            .map_err(|error| ShellError::new("render-replay", error.to_string()))?;
+        println!("{rendered_replay}");
     }
     let rendered_receipt = serde_json::to_string(&receipt)
         .map_err(|error| ShellError::new("render-receipt", error.to_string()))?;
@@ -461,14 +555,28 @@ fn evaluate_export(
         &artifact_identity,
         limits.max_evaluator_bytes,
     )?;
-    let output = run_evaluator(&plan, limits)?;
-    verify_evaluator_artifact(
-        &evaluator_program,
-        &artifact_identity,
-        limits.max_evaluator_bytes,
-    )?;
+    let replay_profile = replay_profile(options.replay_runs, limits.max_replay_runs)?;
+    let (output_bytes, replay) = if let Some(profile) = replay_profile {
+        let assessment = execute_replay_runs(
+            profile,
+            &plan_identity,
+            &artifact_identity,
+            &resource_profile_identity,
+            || {
+                run_bound_evaluator_once(&plan, &evaluator_program, &artifact_identity, limits)
+                    .map_err(|error| error.stage)
+            },
+        )?;
+        let (output_bytes, report) = require_replay_agreement(assessment)?;
+        (output_bytes, Some(report))
+    } else {
+        (
+            run_bound_evaluator_once(&plan, &evaluator_program, &artifact_identity, limits)?,
+            None,
+        )
+    };
     Ok(EvaluatedExport {
-        output,
+        output_bytes,
         evaluator: EvaluatorDescriptor {
             identity: options.evaluator_identity.clone(),
             artifact_identity,
@@ -478,7 +586,23 @@ fn evaluate_export(
             options: evaluator_options(&canonical_plan),
             import_path_policy: ImportPathPolicy::SnapshotOnly,
         },
+        replay,
     })
+}
+
+fn run_bound_evaluator_once(
+    plan: &EvaluationPlan,
+    evaluator_program: &Path,
+    artifact_identity: &str,
+    limits: &ResourceLimits,
+) -> Result<Vec<u8>, ShellError> {
+    let result = run_evaluator(plan, limits);
+    verify_evaluator_artifact(
+        evaluator_program,
+        artifact_identity,
+        limits.max_evaluator_bytes,
+    )?;
+    result.map(|output| output.stdout)
 }
 
 fn parse_args(args: &[String]) -> Result<CliOptions, ShellError> {
@@ -491,6 +615,7 @@ fn parse_args(args: &[String]) -> Result<CliOptions, ShellError> {
     let mut evaluator_identity = None;
     let mut evaluator_version = None;
     let mut manifest = None;
+    let mut replay_runs = None;
     let mut mode = None;
     let mut index = FIRST_OPTION_INDEX;
     while index < args.len() {
@@ -514,6 +639,19 @@ fn parse_args(args: &[String]) -> Result<CliOptions, ShellError> {
             FLAG_MANIFEST => {
                 manifest = Some(PathBuf::from(next_value(args, &mut index, FLAG_MANIFEST)?));
             }
+            FLAG_REPLAY_RUNS if replay_runs.is_none() => {
+                replay_runs = Some(parse_replay_runs(next_value(
+                    args,
+                    &mut index,
+                    FLAG_REPLAY_RUNS,
+                )?)?);
+            }
+            FLAG_REPLAY_RUNS => {
+                return Err(ShellError::new(
+                    "arguments",
+                    format!("duplicate `{FLAG_REPLAY_RUNS}`; {USAGE}"),
+                ));
+            }
             unknown => {
                 return Err(ShellError::new(
                     "arguments",
@@ -530,6 +668,7 @@ fn parse_args(args: &[String]) -> Result<CliOptions, ShellError> {
         evaluator_identity: required(evaluator_identity, FLAG_EVALUATOR_IDENTITY)?,
         evaluator_version: required(evaluator_version, FLAG_EVALUATOR_VERSION)?,
         manifest: required(manifest, FLAG_MANIFEST)?,
+        replay_runs,
         mode: required(mode, "--write or --check")?,
     };
     require_nonempty(&options.evaluator_identity, FLAG_EVALUATOR_IDENTITY)?;
@@ -578,6 +717,43 @@ fn require_nonempty(value: &str, flag: &str) -> Result<(), ShellError> {
     } else {
         Ok(())
     }
+}
+
+fn parse_replay_runs(value: &str) -> Result<usize, ShellError> {
+    let runs = value.parse::<usize>().map_err(|error| {
+        ShellError::new(
+            "arguments",
+            format!("`{FLAG_REPLAY_RUNS}` requires an integer: {error}"),
+        )
+    })?;
+    if runs < REPLAY_MINIMUM_RUNS {
+        return Err(ShellError::new(
+            "arguments",
+            format!("`{FLAG_REPLAY_RUNS}` requires at least {REPLAY_MINIMUM_RUNS} sequential runs"),
+        ));
+    }
+    Ok(runs)
+}
+
+fn replay_profile(
+    requested_runs: Option<usize>,
+    maximum_runs: usize,
+) -> Result<Option<ReplayProfile>, ShellError> {
+    let Some(requested_runs) = requested_runs else {
+        return Ok(None);
+    };
+    if requested_runs > maximum_runs {
+        return Err(ShellError::new(
+            "replay-profile",
+            format!(
+                "requested {requested_runs} replay runs exceeds configured maximum {maximum_runs}"
+            ),
+        ));
+    }
+    Ok(Some(ReplayProfile {
+        requested_runs,
+        maximum_runs,
+    }))
 }
 
 fn validate_shell_contract(request: &ExportRequest) -> Result<(), ShellError> {
@@ -811,6 +987,186 @@ fn evaluator_options(plan: &CanonicalEvaluationPlan) -> Vec<String> {
         options.push(format!("contract={}", plan.contract));
     }
     options
+}
+
+// r[impl nickel_export.shell.determinism_replay]
+fn execute_replay_runs<F>(
+    profile: ReplayProfile,
+    plan_identity: &str,
+    evaluator_artifact_identity: &str,
+    resource_profile_identity: &str,
+    mut execute_run: F,
+) -> Result<ReplayAssessment, ShellError>
+where
+    F: FnMut() -> Result<Vec<u8>, &'static str>,
+{
+    if profile.requested_runs < REPLAY_MINIMUM_RUNS || profile.requested_runs > profile.maximum_runs
+    {
+        return Err(ShellError::new(
+            "replay-profile",
+            "replay profile violates its typed run-count bounds",
+        ));
+    }
+    let mut attempts = Vec::with_capacity(profile.requested_runs);
+    for _ in 0..profile.requested_runs {
+        match execute_run() {
+            Ok(bytes) => attempts.push(ReplayAttempt::Success(bytes)),
+            Err(stage) => {
+                attempts.push(ReplayAttempt::Failure(stage));
+                break;
+            }
+        }
+    }
+    assess_replay(
+        profile,
+        plan_identity,
+        evaluator_artifact_identity,
+        resource_profile_identity,
+        &attempts,
+    )
+}
+
+fn assess_replay(
+    profile: ReplayProfile,
+    plan_identity: &str,
+    evaluator_artifact_identity: &str,
+    resource_profile_identity: &str,
+    attempts: &[ReplayAttempt],
+) -> Result<ReplayAssessment, ShellError> {
+    if attempts.is_empty() || attempts.len() > profile.requested_runs {
+        return Err(ShellError::new(
+            "replay-assessment",
+            "replay attempts violate the selected profile",
+        ));
+    }
+    let mut outcomes = Vec::with_capacity(attempts.len());
+    let mut reference_output: Option<Vec<u8>> = None;
+    let mut saw_failure = false;
+    let mut saw_divergence = false;
+    for (index, attempt) in attempts.iter().enumerate() {
+        match attempt {
+            ReplayAttempt::Success(bytes) => {
+                if reference_output
+                    .as_ref()
+                    .is_some_and(|reference| reference != bytes)
+                {
+                    saw_divergence = true;
+                } else if reference_output.is_none() {
+                    reference_output = Some(bytes.clone());
+                }
+                let output_bytes = u64::try_from(bytes.len()).map_err(|_| {
+                    ShellError::new("replay-assessment", "output byte length overflowed")
+                })?;
+                outcomes.push(ReplayRunOutcome {
+                    run: index + 1,
+                    status: ReplayRunStatus::Success,
+                    output_identity: blake3_identity(bytes),
+                    output_bytes,
+                    failure_stage: String::new(),
+                });
+            }
+            ReplayAttempt::Failure(stage) => {
+                saw_failure = true;
+                outcomes.push(ReplayRunOutcome {
+                    run: index + 1,
+                    status: ReplayRunStatus::Failure,
+                    output_identity: String::new(),
+                    output_bytes: 0,
+                    failure_stage: (*stage).to_string(),
+                });
+            }
+        }
+    }
+    let verdict = if saw_failure || attempts.len() != profile.requested_runs {
+        ReplayVerdict::Failure
+    } else if saw_divergence {
+        ReplayVerdict::Divergence
+    } else {
+        ReplayVerdict::Agreement
+    };
+    let mut report = ReplayReport {
+        schema: REPLAY_REPORT_SCHEMA,
+        profile,
+        plan_identity: plan_identity.to_string(),
+        evaluator_artifact_identity: evaluator_artifact_identity.to_string(),
+        resource_profile_identity: resource_profile_identity.to_string(),
+        outcomes,
+        verdict,
+        report_identity: String::new(),
+        non_claim: REPLAY_NON_CLAIM,
+    };
+    report.report_identity = blake3_identity(&canonical_replay_report_bytes(&report)?);
+    let agreed_output = if verdict == ReplayVerdict::Agreement {
+        reference_output
+    } else {
+        None
+    };
+    Ok(ReplayAssessment {
+        report,
+        agreed_output,
+    })
+}
+
+fn require_replay_agreement(
+    assessment: ReplayAssessment,
+) -> Result<(Vec<u8>, ReplayReport), ShellError> {
+    let verdict = assessment.report.verdict;
+    let Some(output_bytes) = assessment.agreed_output else {
+        let (stage, message) = match verdict {
+            ReplayVerdict::Divergence => (
+                "replay-divergence",
+                "selected replay runs produced different exact output bytes",
+            ),
+            ReplayVerdict::Failure => (
+                "replay-run-failure",
+                "a selected replay run failed before agreement",
+            ),
+            ReplayVerdict::Agreement => (
+                "replay-assessment",
+                "agreement report did not retain an output",
+            ),
+        };
+        return Err(ShellError::new(stage, message).with_replay(assessment.report));
+    };
+    Ok((output_bytes, assessment.report))
+}
+
+fn canonical_replay_report_bytes(report: &ReplayReport) -> Result<Vec<u8>, ShellError> {
+    let mut output = Vec::new();
+    append_replay_bytes(&mut output, report.schema.as_bytes())?;
+    append_replay_count(&mut output, report.profile.requested_runs)?;
+    append_replay_count(&mut output, report.profile.maximum_runs)?;
+    append_replay_bytes(&mut output, report.plan_identity.as_bytes())?;
+    append_replay_bytes(&mut output, report.evaluator_artifact_identity.as_bytes())?;
+    append_replay_bytes(&mut output, report.resource_profile_identity.as_bytes())?;
+    append_replay_count(&mut output, report.outcomes.len())?;
+    for outcome in &report.outcomes {
+        append_replay_count(&mut output, outcome.run)?;
+        append_replay_bytes(&mut output, outcome.status.as_str().as_bytes())?;
+        append_replay_bytes(&mut output, outcome.output_identity.as_bytes())?;
+        append_replay_u64(&mut output, outcome.output_bytes);
+        append_replay_bytes(&mut output, outcome.failure_stage.as_bytes())?;
+    }
+    append_replay_bytes(&mut output, report.verdict.as_str().as_bytes())?;
+    append_replay_bytes(&mut output, report.non_claim.as_bytes())?;
+    Ok(output)
+}
+
+fn append_replay_count(output: &mut Vec<u8>, count: usize) -> Result<(), ShellError> {
+    let count = u64::try_from(count)
+        .map_err(|_| ShellError::new("replay-canonicalize", "count overflowed u64"))?;
+    append_replay_u64(output, count);
+    Ok(())
+}
+
+fn append_replay_u64(output: &mut Vec<u8>, value: u64) {
+    output.extend_from_slice(&value.to_be_bytes());
+}
+
+fn append_replay_bytes(output: &mut Vec<u8>, bytes: &[u8]) -> Result<(), ShellError> {
+    append_replay_count(output, bytes.len())?;
+    output.extend_from_slice(bytes);
+    Ok(())
 }
 
 fn evaluator_artifact_identity(program: &Path, max_bytes: u64) -> Result<String, ShellError> {
@@ -1452,6 +1808,15 @@ fn validate_relative_shell_path(path: &Path, subject: &str) -> Result<(), ShellE
 mod tests {
     use super::*;
 
+    const TEST_REPLAY_RUNS: usize = 3;
+
+    fn replay_profile_for_test() -> ReplayProfile {
+        ReplayProfile {
+            requested_runs: TEST_REPLAY_RUNS,
+            maximum_runs: ResourceLimits::DEFAULT.max_replay_runs,
+        }
+    }
+
     fn valid_args() -> Vec<String> {
         [
             "nickel-export",
@@ -1483,6 +1848,32 @@ mod tests {
             parsed.map(|options| options.mode),
             Ok(Mode::Check)
         ));
+    }
+
+    // r[verify nickel_export.shell.determinism_replay]
+    #[test]
+    fn parser_accepts_bounded_replay_and_rejects_invalid_counts() {
+        let mut replay = valid_args();
+        replay.push(FLAG_REPLAY_RUNS.to_string());
+        replay.push(TEST_REPLAY_RUNS.to_string());
+        let parsed = parse_args(&replay).unwrap_or_else(|error| panic_for_test(&error));
+        assert_eq!(parsed.replay_runs, Some(TEST_REPLAY_RUNS));
+        assert!(
+            replay_profile(parsed.replay_runs, ResourceLimits::DEFAULT.max_replay_runs).is_ok()
+        );
+
+        let mut duplicate = replay;
+        duplicate.push(FLAG_REPLAY_RUNS.to_string());
+        duplicate.push(TEST_REPLAY_RUNS.to_string());
+        assert!(parse_args(&duplicate).is_err());
+
+        let mut too_few = valid_args();
+        too_few.push(FLAG_REPLAY_RUNS.to_string());
+        too_few.push((REPLAY_MINIMUM_RUNS - 1).to_string());
+        assert!(parse_args(&too_few).is_err());
+
+        let over_limit = ResourceLimits::DEFAULT.max_replay_runs + 1;
+        assert!(replay_profile(Some(over_limit), ResourceLimits::DEFAULT.max_replay_runs).is_err());
     }
 
     // r[verify nickel_export.core.manifest_integrity_verification]
@@ -1580,7 +1971,172 @@ mod tests {
         assert!(evaluator_options(&canonical).contains(&"format=text".to_string()));
     }
 
+    // r[verify nickel_export.shell.determinism_replay]
+    #[test]
+    fn replay_agreement_is_deterministic_and_retains_exact_output() {
+        let stable_output = b"stable replay output\n".to_vec();
+        let first = execute_replay_runs(
+            replay_profile_for_test(),
+            "b3:plan",
+            "b3:evaluator",
+            "b3:resources",
+            || Ok(stable_output.clone()),
+        )
+        .unwrap_or_else(|error| panic_for_test(&error));
+        let second = execute_replay_runs(
+            replay_profile_for_test(),
+            "b3:plan",
+            "b3:evaluator",
+            "b3:resources",
+            || Ok(stable_output.clone()),
+        )
+        .unwrap_or_else(|error| panic_for_test(&error));
+
+        assert_eq!(first, second);
+        assert_eq!(first.report.verdict, ReplayVerdict::Agreement);
+        assert_eq!(first.report.outcomes.len(), TEST_REPLAY_RUNS);
+        assert_eq!(first.agreed_output, Some(stable_output));
+        let canonical = canonical_replay_report_bytes(&first.report)
+            .unwrap_or_else(|error| panic_for_test(&error));
+        assert_eq!(first.report.report_identity, blake3_identity(&canonical));
+        let rendered = serde_json::to_string(&first.report).unwrap_or_else(|error| {
+            panic_for_test::<String>(&ShellError::new("test", error.to_string()))
+        });
+        assert!(!rendered.contains("/tmp"));
+        assert!(!rendered.contains("process_id"));
+        assert!(!rendered.contains("clock"));
+    }
+
+    // r[verify nickel_export.shell.determinism_replay]
+    #[test]
+    fn replay_divergence_and_failures_withhold_agreed_output() {
+        const DIVERGENT_RUN: usize = 2;
+        const FAILED_RUN: usize = 2;
+        let mut divergent_run = 0;
+        let divergent = execute_replay_runs(
+            replay_profile_for_test(),
+            "b3:plan",
+            "b3:evaluator",
+            "b3:resources",
+            || {
+                divergent_run += 1;
+                if divergent_run == DIVERGENT_RUN {
+                    Ok(b"different".to_vec())
+                } else {
+                    Ok(b"same".to_vec())
+                }
+            },
+        )
+        .unwrap_or_else(|error| panic_for_test(&error));
+        assert_eq!(divergent.report.verdict, ReplayVerdict::Divergence);
+        assert!(divergent.agreed_output.is_none());
+        assert!(require_replay_agreement(divergent.clone()).is_err());
+        assert_ne!(
+            divergent.report.outcomes[0].output_identity,
+            divergent.report.outcomes[1].output_identity
+        );
+
+        for failure_stage in ["evaluator-failure", "evaluator-timeout", "evaluator-stdout"] {
+            let mut run = 0;
+            let failed = execute_replay_runs(
+                replay_profile_for_test(),
+                "b3:plan",
+                "b3:evaluator",
+                "b3:resources",
+                || {
+                    run += 1;
+                    if run == FAILED_RUN {
+                        Err(failure_stage)
+                    } else {
+                        Ok(b"same".to_vec())
+                    }
+                },
+            )
+            .unwrap_or_else(|error| panic_for_test(&error));
+            assert_eq!(failed.report.verdict, ReplayVerdict::Failure);
+            assert!(failed.agreed_output.is_none());
+            assert_eq!(failed.report.outcomes.len(), FAILED_RUN);
+            assert_eq!(
+                failed.report.outcomes[FAILED_RUN - 1].failure_stage,
+                failure_stage
+            );
+        }
+    }
+
+    // r[verify nickel_export.shell.determinism_replay]
+    #[test]
+    fn sequential_external_evaluator_divergence_and_failure_are_recorded() {
+        const TEST_FAILURE_EXIT_CODE: i32 = 7;
+        let root = std::env::temp_dir().join(format!(
+            "nickel-export-replay-evaluator-test-{}",
+            std::process::id()
+        ));
+        if let Err(error) = fs::remove_dir_all(&root) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                panic_for_test::<()>(&ShellError::new("test-cleanup", error.to_string()));
+            }
+        }
+        fs::create_dir_all(&root).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-setup", error.to_string()));
+        });
+        let shell_program = resolve_evaluator_program(Path::new("/bin/sh"))
+            .unwrap_or_else(|error| panic_for_test(&error));
+        let alternating = EvaluationPlan {
+            program: shell_program.clone(),
+            args: vec![
+                OsString::from("-c"),
+                OsString::from(
+                    "if test -e replay-state; then printf second; else : > replay-state; printf first; fi",
+                ),
+            ],
+            current_dir: root.clone(),
+        };
+        let limits = resource_limits().unwrap_or_else(|error| panic_for_test(&error));
+        let divergent = execute_replay_runs(
+            replay_profile_for_test(),
+            "b3:plan",
+            "b3:evaluator",
+            "b3:resources",
+            || {
+                run_evaluator(&alternating, &limits)
+                    .map(|output| output.stdout)
+                    .map_err(|error| error.stage)
+            },
+        )
+        .unwrap_or_else(|error| panic_for_test(&error));
+        assert_eq!(divergent.report.verdict, ReplayVerdict::Divergence);
+        assert!(divergent.agreed_output.is_none());
+
+        let failing = EvaluationPlan {
+            program: shell_program,
+            args: vec![
+                OsString::from("-c"),
+                OsString::from(format!("exit {TEST_FAILURE_EXIT_CODE}")),
+            ],
+            current_dir: root.clone(),
+        };
+        let failed = execute_replay_runs(
+            replay_profile_for_test(),
+            "b3:plan",
+            "b3:evaluator",
+            "b3:resources",
+            || {
+                run_evaluator(&failing, &limits)
+                    .map(|output| output.stdout)
+                    .map_err(|error| error.stage)
+            },
+        )
+        .unwrap_or_else(|error| panic_for_test(&error));
+        assert_eq!(failed.report.verdict, ReplayVerdict::Failure);
+        assert_eq!(failed.report.outcomes[0].failure_stage, "evaluator-failure");
+        assert!(failed.agreed_output.is_none());
+        fs::remove_dir_all(&root).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-cleanup", error.to_string()));
+        });
+    }
+
     // r[verify nickel_export.shell.captured_input_evaluation]
+    // r[verify nickel_export.shell.determinism_replay]
     #[test]
     fn snapshot_uses_captured_bytes_and_cleans_up() {
         let repository =
@@ -1708,6 +2264,51 @@ mod tests {
             timeout.err().map(|error| error.stage),
             Some("evaluator-timeout")
         );
+
+        let replay_timeout = execute_replay_runs(
+            replay_profile_for_test(),
+            "b3:plan",
+            "b3:evaluator",
+            "b3:resources",
+            || {
+                run_evaluator(&plan, &timeout_limits)
+                    .map(|output| output.stdout)
+                    .map_err(|error| error.stage)
+            },
+        )
+        .unwrap_or_else(|error| panic_for_test(&error));
+        assert_eq!(replay_timeout.report.verdict, ReplayVerdict::Failure);
+        assert_eq!(
+            replay_timeout.report.outcomes[0].failure_stage,
+            "evaluator-timeout"
+        );
+
+        let oversized_plan = EvaluationPlan {
+            program: plan.program,
+            args: vec![OsString::from("-c"), OsString::from("printf oversized")],
+            current_dir: plan.current_dir,
+        };
+        let oversized_limits = ResourceLimits {
+            max_artifact_bytes: TEST_STREAM_BOUND,
+            ..limits
+        };
+        let replay_oversized = execute_replay_runs(
+            replay_profile_for_test(),
+            "b3:plan",
+            "b3:evaluator",
+            "b3:resources",
+            || {
+                run_evaluator(&oversized_plan, &oversized_limits)
+                    .map(|output| output.stdout)
+                    .map_err(|error| error.stage)
+            },
+        )
+        .unwrap_or_else(|error| panic_for_test(&error));
+        assert_eq!(replay_oversized.report.verdict, ReplayVerdict::Failure);
+        assert_eq!(
+            replay_oversized.report.outcomes[0].failure_stage,
+            "evaluator-stdout"
+        );
     }
 
     #[test]
@@ -1727,6 +2328,32 @@ mod tests {
             .unwrap_or_default();
         assert!(rendered.contains(SHELL_ERROR_SCHEMA));
         assert!(rendered.contains("arguments"));
+        assert!(!rendered.contains("receipt"));
+    }
+
+    // r[verify nickel_export.shell.determinism_replay]
+    #[test]
+    fn replay_failure_serializes_evidence_without_a_success_receipt() {
+        let attempts = [
+            ReplayAttempt::Success(b"first".to_vec()),
+            ReplayAttempt::Failure("evaluator-timeout"),
+        ];
+        let assessment = assess_replay(
+            replay_profile_for_test(),
+            "b3:plan",
+            "b3:evaluator",
+            "b3:resources",
+            &attempts,
+        )
+        .unwrap_or_else(|error| panic_for_test(&error));
+        let error = require_replay_agreement(assessment)
+            .err()
+            .unwrap_or_else(|| panic_for_test(&ShellError::new("test", "expected replay failure")));
+        let rendered = serde_json::to_string(&error).unwrap_or_else(|render_error| {
+            panic_for_test::<String>(&ShellError::new("test", render_error.to_string()))
+        });
+        assert!(rendered.contains(REPLAY_REPORT_SCHEMA));
+        assert!(rendered.contains("evaluator-timeout"));
         assert!(!rendered.contains("receipt"));
     }
 

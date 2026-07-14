@@ -20,6 +20,14 @@
   },
   "license": "AGPL-3.0-or-later",
   "project": "nickel-export",
+  "replay": {
+    "non_claim": "Selected replay agreement is bounded empirical evidence, not proof of universal determinism.",
+    "runs": 3,
+    "selected_families": [
+      "fixtures.json",
+      "examples.service-config"
+    ]
+  },
   "required_checks": [
     "cargo-test",
     "cargo-clippy",

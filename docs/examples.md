@@ -133,6 +133,30 @@ the newly produced bytes and manifest with the checked-in files.
 | The configured Nickel version does not match the executable | Evaluation is rejected before a receipt is issued. |
 | The source violates the contract | Nickel fails and no successful receipt is issued. |
 
+### 5. Detect bounded replay divergence
+
+For selected high-value CI exports, add a typed sequential replay count:
+
+```console
+nix develop -c cargo run --quiet -p nickel-export -- export \
+  --spec examples/service-config/request.json \
+  --root . \
+  --evaluator nickel \
+  --evaluator-identity nixpkgs:nickel \
+  --evaluator-version nickel-lang-cli-1.17.0 \
+  --manifest examples/service-config/generated/manifest.json \
+  --replay-runs 3 \
+  --check
+```
+
+The CLI captures inputs and builds the evaluator plan once, then runs that same
+snapshot and plan three times. Exact-byte agreement prints a deterministic
+replay report followed by the normal receipt. One differing output, evaluator
+failure, timeout, or oversized stream exits nonzero, carries ordered replay
+evidence, and emits no success receipt. Three matching runs can reveal some
+hidden inputs or nondeterminism, but cannot prove that every future run will
+match.
+
 ## Other places the same pattern helps
 
 - Export a reviewed Nickel release policy to JSON for a Rust release tool.

@@ -54,7 +54,9 @@ nix develop -c cargo run --quiet -p nickel-export -- export \
   --check
 ```
 
-Use `--write` to update the destination and manifest. Exactly one of `--write` and `--check` is required. Write and check modes take a repository lock; writes stage and sync both files, publish a durable transaction marker, atomically rename each file, and leave interrupted transactions fail-closed for deterministic recovery. Embedded consumers may instead atomically publish one pointer to a complete generation directory. Source, dependency, evaluator, output, diagnostic, and process-time bounds come from the Nickel-authored `config/resource-limits.ncl` profile embedded in the CLI; timeout, stream overflow, and size conversion failures issue no receipt.
+Use `--write` to update the destination and manifest. Exactly one of `--write` and `--check` is required. Write and check modes take a repository lock; writes stage and sync both files, publish a durable transaction marker, atomically rename each file, and leave interrupted transactions fail-closed for deterministic recovery. Embedded consumers may instead atomically publish one pointer to a complete generation directory. Source, dependency, evaluator, output, diagnostic, replay-run, and process-time bounds come from the Nickel-authored `config/resource-limits.ncl` profile embedded in the CLI; timeout, stream overflow, and size conversion failures issue no receipt.
+
+Add `--replay-runs 3` to execute the same captured snapshot and typed evaluator plan three times sequentially. Agreement prints a deterministic replay report followed by the ordinary receipt. Divergence, evaluator failure, timeout, or oversized output exits nonzero with the replay report nested in the shell error and no success receipt. This is bounded detection evidence, not proof that future runs are deterministic.
 
 Verify stored canonical integrity without running Nickel or writing files:
 

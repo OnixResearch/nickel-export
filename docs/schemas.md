@@ -33,9 +33,9 @@ output bytes exist.
 ## Resource limits
 
 The CLI embeds the checked export of `config/resource-limits.ncl`. Its typed
-profile bounds artifact counts and bytes, evaluator executable and stderr
-bytes, path and option lengths, diagnostic bytes, evaluator deadline, and
-status polling. The BLAKE3 profile identity is carried in the canonical typed
+profile bounds artifact counts and bytes, sequential replay runs, evaluator
+executable and stderr bytes, path and option lengths, diagnostic bytes,
+evaluator deadline, and status polling. The BLAKE3 profile identity is carried in the canonical typed
 execution plan. Limit violations, timeouts, and integer conversion overflow
 fail before receipt creation.
 
@@ -45,7 +45,11 @@ Diagnostics contain a stable `class`, `subject`, human-readable `message`, and `
 
 ## Shell failure: `onix-nickel-export-shell-error/v1`
 
-The CLI emits one JSON object on stderr with a stable `stage` and human-readable `message`. Evaluator spawn/version/execution failures, unsafe paths, source failures, admission failures, stale artifacts, serialization failures, and write failures never include a successful receipt.
+The CLI emits one JSON object on stderr with a stable `stage` and human-readable `message`. Evaluator spawn/version/execution failures, unsafe paths, source failures, admission failures, stale artifacts, serialization failures, and write failures never include a successful receipt. Replay divergence and run failures additionally carry the deterministic replay report in a `replay` field.
+
+## Replay report: `onix-nickel-export-replay-report/v1`
+
+An explicit `--replay-runs` profile executes one captured snapshot and canonical evaluator plan sequentially within the configured run bound. The report binds the shared plan, evaluator artifact, and resource-profile identities to ordered run statuses, exact output BLAKE3 identities, byte lengths, a fail-closed verdict, and a BLAKE3 identity over schema-owned canonical report bytes. Agreement reports precede the ordinary receipt on stdout. Divergence, failure, timeout, and output overflow produce a shell error carrying the report and no success receipt. Reports contain no clock, process ID, snapshot path, or ambient run identifier. Agreement is empirical evidence for only the selected runs, not proof of future or universal determinism.
 
 ## Receipt: `onix-nickel-export-receipt/v3`
 

@@ -7,5 +7,6 @@
   "max_evaluator_bytes": 134217728,
   "max_option_bytes": 16384,
   "max_path_bytes": 4096,
+  "max_replay_runs": 4,
   "max_stderr_bytes": 1048576
 }

@@ -282,6 +282,7 @@
           cli-e2e = pkgs.runCommand "nickel-export-cli-e2e" {
             nativeBuildInputs = [
               self.packages.${system}.nickel-export
+              pkgs.jq
               pkgs.nickel
             ];
             src = self;
@@ -307,6 +308,38 @@
               --evaluator-version nickel-lang-cli-1.17.0 \
               --manifest examples/service-config/generated/manifest.json \
               --check > "$TMPDIR/service-config.receipt.json"
+            replay_runs="$(jq --raw-output '.replay.runs' release/generated/profile.json)"
+            expected_replay_output_lines=2
+            nickel-export export \
+              --spec fixtures/requests/json.json \
+              --root . \
+              --evaluator "${pkgs.nickel}/bin/nickel" \
+              --evaluator-identity nixpkgs:nickel \
+              --evaluator-version nickel-lang-cli-1.17.0 \
+              --manifest fixtures/generated/json.manifest.json \
+              --replay-runs "$replay_runs" \
+              --check > "$TMPDIR/fixtures-json-replay.jsonl"
+            test "$(wc -l < "$TMPDIR/fixtures-json-replay.jsonl")" \
+              -eq "$expected_replay_output_lines"
+            grep -F '"schema":"onix-nickel-export-replay-report/v1"' \
+              "$TMPDIR/fixtures-json-replay.jsonl" > /dev/null
+            for replay_attempt in first second; do
+              nickel-export export \
+                --spec examples/service-config/request.json \
+                --root . \
+                --evaluator "${pkgs.nickel}/bin/nickel" \
+                --evaluator-identity nixpkgs:nickel \
+                --evaluator-version nickel-lang-cli-1.17.0 \
+                --manifest examples/service-config/generated/manifest.json \
+                --replay-runs "$replay_runs" \
+                --check > "$TMPDIR/service-config-replay-$replay_attempt.jsonl"
+              test "$(wc -l < "$TMPDIR/service-config-replay-$replay_attempt.jsonl")" \
+                -eq "$expected_replay_output_lines"
+              grep -F '"schema":"onix-nickel-export-replay-report/v1"' \
+                "$TMPDIR/service-config-replay-$replay_attempt.jsonl" > /dev/null
+            done
+            cmp "$TMPDIR/service-config-replay-first.jsonl" \
+              "$TMPDIR/service-config-replay-second.jsonl"
             nickel-export verify \
               --manifest examples/service-config/generated/manifest.json \
               --root . \
