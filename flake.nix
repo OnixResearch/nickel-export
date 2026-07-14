@@ -136,11 +136,8 @@
             pname = "nickel-export-fuzz-target";
             version = "0.1.0";
             src = self;
+            cargoRoot = "fuzz";
             cargoLock.lockFile = ./fuzz/Cargo.lock;
-            cargoBuildFlags = [
-              "--manifest-path"
-              "fuzz/Cargo.toml"
-            ];
             doCheck = false;
             installPhase = ''
               touch "$out"
