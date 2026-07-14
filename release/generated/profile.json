@@ -1,0 +1,33 @@
+{
+  "artifact_families": [
+    "rust-packages",
+    "nix-package",
+    "canonical-schemas",
+    "compatibility-projections",
+    "fixture-manifests"
+  ],
+  "claim_boundary": [
+    "No Nickel evaluation occurs in nickel-export-core.",
+    "A receipt does not prove evaluator equivalence, deployability, build success, product-policy conformance, or release eligibility.",
+    "Declared-only external evaluator receipts do not claim an evaluator-observed dependency closure."
+  ],
+  "evaluator": {
+    "identity": "nixpkgs:nickel",
+    "import_path_policy": "declared_only",
+    "version": "nickel-lang-cli-1.17.0"
+  },
+  "license": "AGPL-3.0-or-later",
+  "project": "nickel-export",
+  "required_checks": [
+    "cargo-test",
+    "cargo-clippy",
+    "cargo-format",
+    "core-no-std-host",
+    "core-no-std-wasm",
+    "cairn-policy",
+    "nickel-contracts",
+    "cli-e2e",
+    "fixture-freshness"
+  ],
+  "schema": "onix-nickel-export-release-profile/v1"
+}

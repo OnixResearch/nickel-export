@@ -1,0 +1,6 @@
+/target
+/result
+/generated
+/.direnv
+/.envrc.local
+artifacts/
