@@ -15,7 +15,7 @@ cases where this tool is unnecessary.
 
 The repository separates a pure core from evaluator and filesystem authority:
 
-- `nickel-export-core` is `#![no_std]` + `alloc`. It normalizes requests, validates complete declared dependency sets, computes BLAKE3 identities, rejects error diagnostics and secret-like material, builds deterministic receipts/manifests, checks freshness, and projects legacy Octet and Mantle shapes. It never evaluates Nickel or performs I/O.
+- `nickel-export-core` is `#![no_std]` + `alloc`. It strictly decodes wire values, normalizes requests, validates complete declared dependency sets, computes BLAKE3 identities, rejects error diagnostics and secret-like material, and produces opaque `AdmittedReceipt` and `VerifiedManifest` states. Only admitted evidence reaches freshness checks or legacy Octet and Mantle projections. It never evaluates Nickel or performs I/O.
 - `nickel-export` is a thin std shell. It captures declared files into a private path-preserving snapshot, removes ambient evaluator environment authority, invokes an explicit external Nickel program under the checked `config/resource-limits.ncl` profile, applies an optional declared contract, writes generated artifacts, and implements fail-closed `--check` mode.
 
 ## Claim boundary

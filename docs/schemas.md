@@ -57,7 +57,7 @@ A receipt binds:
 - evaluator label, exact artifact BLAKE3 identity, optional adapter-verified closure identity, typed plan identity, version metadata, sorted non-duplicate options, and dependency-observation policy;
 - sorted non-fatal diagnostics and an explicit non-claim.
 
-The core rejects source/output path mismatches, incomplete dependency material, undeclared observed imports, incomplete evaluator-observed closures, error diagnostics, unsafe artifact paths, and conservative secret markers in authored source/dependencies without opt-in.
+The core rejects source/output path mismatches, incomplete dependency material, undeclared observed imports, incomplete evaluator-observed closures, error diagnostics, unsafe artifact paths, malformed identities, weakened non-claims, and conservative secret markers in authored source/dependencies without opt-in. Versioned request, receipt, manifest, artifact, diagnostic, evaluator, and resource-profile records reject unknown fields. Deserialization produces wire values; pure admission produces opaque `AdmittedReceipt` and `VerifiedManifest` states, and compatibility projections require those admitted states.
 
 ## Manifest: `onix-nickel-export-manifest/v2`
 

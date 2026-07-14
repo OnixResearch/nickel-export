@@ -1914,6 +1914,63 @@ mod tests {
         assert_eq!(normalized.contract, "DynamicEvidenceProfiles");
     }
 
+    // r[verify nickel_export.core.admitted_evidence_types]
+    #[test]
+    fn strict_wire_decoding_and_admission_reject_unknown_or_fabricated_evidence() {
+        let evaluator = evaluator("nickel-cli");
+        let receipt = receipt_for("generated/config.json", &evaluator);
+        let manifest =
+            build_manifest(core::slice::from_ref(&receipt)).unwrap_or_else(panic_for_test);
+
+        let receipt_json = serde_json::to_vec(&receipt).unwrap_or_else(panic_for_test);
+        let receipt_wire: ExportReceipt =
+            serde_json::from_slice(&receipt_json).unwrap_or_else(panic_for_test);
+        assert!(admit_receipt(receipt_wire).is_ok());
+
+        let manifest_json = serde_json::to_vec(&manifest).unwrap_or_else(panic_for_test);
+        let manifest_wire: ExportManifest =
+            serde_json::from_slice(&manifest_json).unwrap_or_else(panic_for_test);
+        assert!(admit_manifest(manifest_wire).is_ok());
+
+        let mut unknown_nested = serde_json::to_value(&manifest).unwrap_or_else(panic_for_test);
+        let inserted = unknown_nested
+            .get_mut("evaluator")
+            .and_then(serde_json::Value::as_object_mut)
+            .map(|evaluator| {
+                evaluator.insert(
+                    "ambient_authority".to_string(),
+                    serde_json::Value::Bool(true),
+                )
+            });
+        assert!(inserted.is_some());
+        let unknown_nested_bytes =
+            serde_json::to_vec(&unknown_nested).unwrap_or_else(panic_for_test);
+        assert!(serde_json::from_slice::<ExportManifest>(&unknown_nested_bytes).is_err());
+
+        let request_with_unknown = br#"{
+            "schema":"onix-nickel-export-request/v1",
+            "family_id":"tests.unknown",
+            "source":"config/source.ncl",
+            "dependencies":[],
+            "import_paths":[],
+            "selector":"",
+            "contract":"",
+            "format":"json",
+            "destination":"generated/config.json",
+            "allow_secret_material":false,
+            "ambient_authority":true
+        }"#;
+        assert!(serde_json::from_slice::<ExportRequest>(request_with_unknown).is_err());
+
+        let mut fabricated = receipt.clone().into_wire();
+        fabricated.declared_input_identity = blake3_identity(b"fabricated");
+        assert!(admit_receipt(fabricated).is_err());
+
+        let mut weakened = receipt.into_wire();
+        weakened.non_claim = "export succeeded".to_string();
+        assert!(admit_receipt(weakened).is_err());
+    }
+
     #[test]
     fn rejects_unsupported_serialized_format_malformed_manifest_and_weakened_nonclaim() {
         let unsupported_format = br#"{
