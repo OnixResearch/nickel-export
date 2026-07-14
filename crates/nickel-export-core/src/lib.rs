@@ -12,6 +12,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
+use core::ops::Deref;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -62,6 +63,7 @@ pub const DEFAULT_EVALUATOR_POLL_MILLISECONDS: u64 = 10;
 pub const NON_CLAIM: &str = "Nickel export success proves only exact declared input and output identities under the recorded evaluator descriptor; the declared input identity is not proof of a complete dependency closure or a safe cache key; the receipt does not prove deployability, product-policy conformance, evaluator equivalence, build success, or release eligibility";
 
 const BLAKE3_PREFIX: &str = "b3:";
+const BLAKE3_HEX_LENGTH: usize = 64;
 const HEX_RADIX: u8 = 16;
 const HEX_DIGITS_PER_BYTE: usize = 2;
 const HALF_BYTE_BITS: u32 = 4;
@@ -82,6 +84,7 @@ const SECRET_MARKERS: &[&[u8]] = &[
 /// Named bounds applied by the core and evaluator shell.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct ResourceLimits {
     /// Maximum declared artifacts or list entries.
     pub max_artifacts: usize,
@@ -202,6 +205,7 @@ pub enum DiagnosticSeverity {
 /// Structured diagnostic at the evaluator-neutral boundary.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Diagnostic {
     /// Diagnostic schema.
     pub schema: String,
@@ -232,6 +236,7 @@ impl Diagnostic {
 /// One normalized export request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct ExportRequest {
     /// Request schema.
     pub schema: String,
@@ -284,6 +289,7 @@ pub struct DeclaredInputMaterial<'a> {
 /// Exact-byte identity for one artifact.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct ArtifactIdentity {
     /// Normalized path.
     pub path: String,
@@ -296,6 +302,7 @@ pub struct ArtifactIdentity {
 /// Evaluator implementation and option descriptor.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct EvaluatorDescriptor {
     /// Human-readable evaluator implementation or derivation label.
     pub identity: String,
@@ -338,6 +345,7 @@ pub struct EvaluationObservation<'a> {
 /// Accepted deterministic export receipt.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct ExportReceipt {
     /// Receipt schema.
     pub schema: String,
@@ -370,6 +378,7 @@ pub struct ExportReceipt {
 /// Multi-export freshness and mixed-evaluator manifest.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct ExportManifest {
     /// Manifest schema.
     pub schema: String,
@@ -381,6 +390,60 @@ pub struct ExportManifest {
     pub exports: Vec<ExportReceipt>,
     /// BLAKE3 identity of the canonical manifest payload.
     pub manifest_identity: String,
+}
+
+/// Receipt admitted by the pure invariant validator.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(Serialize), serde(transparent))]
+pub struct AdmittedReceipt(ExportReceipt);
+
+impl AdmittedReceipt {
+    /// Borrow the admitted wire representation.
+    #[must_use]
+    pub const fn as_wire(&self) -> &ExportReceipt {
+        &self.0
+    }
+
+    /// Consume the admitted value into its wire representation.
+    #[must_use]
+    pub fn into_wire(self) -> ExportReceipt {
+        self.0
+    }
+}
+
+impl Deref for AdmittedReceipt {
+    type Target = ExportReceipt;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_wire()
+    }
+}
+
+/// Manifest admitted by the pure invariant validator.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize), serde(transparent))]
+pub struct VerifiedManifest(ExportManifest);
+
+impl VerifiedManifest {
+    /// Borrow the verified wire representation.
+    #[must_use]
+    pub const fn as_wire(&self) -> &ExportManifest {
+        &self.0
+    }
+
+    /// Consume the verified value into its wire representation.
+    #[must_use]
+    pub fn into_wire(self) -> ExportManifest {
+        self.0
+    }
+}
+
+impl Deref for VerifiedManifest {
+    type Target = ExportManifest;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_wire()
+    }
 }
 
 /// Deterministic core rejection.
@@ -541,7 +604,9 @@ pub fn build_declared_input_identity(
 /// material, undeclared observed dependencies, or error diagnostics.
 // r[impl nickel_export.core.identity]
 // r[impl nickel_export.core.fail_closed]
-pub fn build_receipt(observation: &EvaluationObservation<'_>) -> Result<ExportReceipt, CoreError> {
+pub fn build_receipt(
+    observation: &EvaluationObservation<'_>,
+) -> Result<AdmittedReceipt, CoreError> {
     let declared_input = DeclaredInputMaterial {
         request: observation.request,
         source: observation.source.clone(),
@@ -570,7 +635,7 @@ pub fn build_receipt(observation: &EvaluationObservation<'_>) -> Result<ExportRe
     }
     let declared_input_identity = hash_declared_input(&validated)?;
 
-    Ok(ExportReceipt {
+    Ok(AdmittedReceipt(ExportReceipt {
         schema: RECEIPT_SCHEMA.to_string(),
         family_id: validated.request.family_id,
         declared_input_identity,
@@ -584,7 +649,126 @@ pub fn build_receipt(observation: &EvaluationObservation<'_>) -> Result<ExportRe
         evaluator: validated.evaluator,
         diagnostics,
         non_claim: NON_CLAIM.to_string(),
-    })
+    }))
+}
+
+/// Admit a deserialized receipt after recomputing every structural invariant.
+///
+/// # Errors
+///
+/// Returns a deterministic rejection for unsupported schemas, weakened
+/// non-claims, malformed identities, invalid paths, evaluator ambiguity, or a
+/// mismatched declared-input identity.
+// r[impl nickel_export.core.admitted_evidence_types]
+pub fn admit_receipt(wire: ExportReceipt) -> Result<AdmittedReceipt, CoreError> {
+    if wire.schema != RECEIPT_SCHEMA {
+        return Err(invalid_wire("receipt.schema", "unsupported receipt schema"));
+    }
+    if wire.non_claim != NON_CLAIM {
+        return Err(invalid_wire(
+            "receipt.non_claim",
+            "receipt non-claim differs",
+        ));
+    }
+    validate_identity(&wire.declared_input_identity, "declared_input_identity")?;
+    validate_artifact_wire(&wire.source)?;
+    for dependency in &wire.dependencies {
+        validate_artifact_wire(dependency)?;
+    }
+    validate_artifact_wire(&wire.output)?;
+    validate_diagnostic_bounds(&wire.diagnostics)?;
+    if wire
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.schema != DIAGNOSTIC_SCHEMA)
+    {
+        return Err(invalid_wire(
+            "receipt.diagnostics",
+            "diagnostic schema is unsupported",
+        ));
+    }
+    if wire
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+    {
+        return Err(CoreError::EvaluationFailed(wire.diagnostics.clone()));
+    }
+    let evaluator = validate_evaluator(&wire.evaluator)?;
+    validate_identity(&evaluator.artifact_identity, "evaluator.artifact_identity")?;
+    validate_identity(&evaluator.plan_identity, "evaluator.plan_identity")?;
+    let request = normalize_request(&ExportRequest {
+        schema: REQUEST_SCHEMA.to_string(),
+        family_id: wire.family_id.clone(),
+        source: wire.source.path.clone(),
+        dependencies: wire
+            .dependencies
+            .iter()
+            .map(|artifact| artifact.path.clone())
+            .collect(),
+        import_paths: wire.import_paths.clone(),
+        selector: wire.selector.clone(),
+        contract: wire.contract.clone(),
+        format: wire.format,
+        destination: wire.output.path.clone(),
+        allow_secret_material: false,
+    })?;
+    let validated = ValidatedDeclaredInput {
+        request,
+        source: wire.source.clone(),
+        dependencies: wire.dependencies.clone(),
+        evaluator,
+    };
+    if hash_declared_input(&validated)? != wire.declared_input_identity {
+        return Err(invalid_wire(
+            "receipt.declared_input_identity",
+            "declared input identity does not match receipt fields",
+        ));
+    }
+    Ok(AdmittedReceipt(wire))
+}
+
+/// Admit a deserialized manifest after recomputing canonical identities.
+///
+/// # Errors
+///
+/// Returns a deterministic rejection for invalid nested receipts, mixed
+/// evaluators, duplicate or unsorted outputs, or a stale manifest identity.
+#[cfg(feature = "serde")]
+pub fn admit_manifest(wire: ExportManifest) -> Result<VerifiedManifest, CoreError> {
+    if wire.schema != MANIFEST_SCHEMA || wire.generator != GENERATOR_ID {
+        return Err(invalid_wire(
+            "manifest.schema",
+            "unsupported manifest schema or generator",
+        ));
+    }
+    if wire.exports.is_empty() {
+        return Err(invalid_wire("manifest.exports", "manifest is empty"));
+    }
+    let evaluator = validate_evaluator(&wire.evaluator)?;
+    let mut previous_output: Option<&str> = None;
+    let mut outputs = BTreeSet::new();
+    for export in &wire.exports {
+        let admitted = admit_receipt(export.clone())?;
+        if admitted.evaluator != evaluator {
+            return Err(CoreError::MixedEvaluators);
+        }
+        if previous_output.is_some_and(|previous| previous >= admitted.output.path.as_str()) {
+            return Err(invalid_wire(
+                "manifest.exports",
+                "manifest outputs are not strictly sorted",
+            ));
+        }
+        previous_output = Some(&export.output.path);
+        if !outputs.insert(export.output.path.clone()) {
+            return Err(CoreError::DuplicateOutput(export.output.path.clone()));
+        }
+    }
+    let expected_identity = manifest_payload_identity(&wire.evaluator, &wire.exports)?;
+    if expected_identity != wire.manifest_identity {
+        return Err(CoreError::StaleManifest);
+    }
+    Ok(VerifiedManifest(wire))
 }
 
 /// Build a deterministic manifest while prohibiting mixed evaluators.
@@ -594,7 +778,7 @@ pub fn build_receipt(observation: &EvaluationObservation<'_>) -> Result<ExportRe
 /// Returns an error for empty input, duplicate outputs, mixed evaluator
 /// descriptors, or unavailable canonical serialization.
 #[cfg(feature = "serde")]
-pub fn build_manifest(receipts: &[ExportReceipt]) -> Result<ExportManifest, CoreError> {
+pub fn build_manifest(receipts: &[AdmittedReceipt]) -> Result<VerifiedManifest, CoreError> {
     let Some(first) = receipts.first() else {
         return Err(CoreError::InvalidRequest(vec![error(
             "empty-manifest",
@@ -603,7 +787,10 @@ pub fn build_manifest(receipts: &[ExportReceipt]) -> Result<ExportManifest, Core
         )]));
     };
     let evaluator = first.evaluator.clone();
-    let mut exports = receipts.to_vec();
+    let mut exports = receipts
+        .iter()
+        .map(|receipt| receipt.as_wire().clone())
+        .collect::<Vec<_>>();
     exports.sort_by(|left, right| left.output.path.cmp(&right.output.path));
     let mut outputs = BTreeSet::new();
     for receipt in &exports {
@@ -614,20 +801,14 @@ pub fn build_manifest(receipts: &[ExportReceipt]) -> Result<ExportManifest, Core
             return Err(CoreError::DuplicateOutput(receipt.output.path.clone()));
         }
     }
-    let payload = ManifestPayload {
-        schema: MANIFEST_SCHEMA,
-        generator: GENERATOR_ID,
-        evaluator: &evaluator,
-        exports: &exports,
-    };
-    let bytes = serde_json::to_vec(&payload).map_err(|_| CoreError::Serialization)?;
-    Ok(ExportManifest {
+    let manifest_identity = manifest_payload_identity(&evaluator, &exports)?;
+    Ok(VerifiedManifest(ExportManifest {
         schema: MANIFEST_SCHEMA.to_string(),
         generator: GENERATOR_ID.to_string(),
         evaluator,
         exports,
-        manifest_identity: blake3_identity(&bytes),
-    })
+        manifest_identity,
+    }))
 }
 
 /// Compare a checked-in manifest with a freshly derived manifest.
@@ -637,14 +818,29 @@ pub fn build_manifest(receipts: &[ExportReceipt]) -> Result<ExportManifest, Core
 /// Returns [`CoreError::StaleManifest`] when any exact identity or metadata
 /// differs.
 pub fn verify_manifest_fresh(
-    expected: &ExportManifest,
-    actual: &ExportManifest,
+    expected: &VerifiedManifest,
+    actual: &VerifiedManifest,
 ) -> Result<(), CoreError> {
     if expected == actual {
         Ok(())
     } else {
         Err(CoreError::StaleManifest)
     }
+}
+
+#[cfg(feature = "serde")]
+fn manifest_payload_identity(
+    evaluator: &EvaluatorDescriptor,
+    exports: &[ExportReceipt],
+) -> Result<String, CoreError> {
+    let payload = ManifestPayload {
+        schema: MANIFEST_SCHEMA,
+        generator: GENERATOR_ID,
+        evaluator,
+        exports,
+    };
+    let bytes = serde_json::to_vec(&payload).map_err(|_| CoreError::Serialization)?;
+    Ok(blake3_identity(&bytes))
 }
 
 #[cfg(feature = "serde")]
@@ -709,7 +905,7 @@ pub struct OctetIdentity {
 /// Project one canonical manifest into the Octet v1 shape.
 #[must_use]
 // r[impl nickel_export.compat.projections]
-pub fn project_octet_manifest(manifest: &ExportManifest) -> OctetManifest {
+pub fn project_octet_manifest(manifest: &VerifiedManifest) -> OctetManifest {
     OctetManifest {
         schema_version: OCTET_MANIFEST_SCHEMA.to_string(),
         generator: OCTET_GENERATOR_ID.to_string(),
@@ -766,7 +962,7 @@ pub struct MantleEvaluatorDescriptor {
 
 /// Project one canonical receipt into the Mantle v1 shape.
 #[must_use]
-pub fn project_mantle_receipt(receipt: &ExportReceipt) -> MantleReceipt {
+pub fn project_mantle_receipt(receipt: &AdmittedReceipt) -> MantleReceipt {
     MantleReceipt {
         schema: MANTLE_RECEIPT_SCHEMA.to_string(),
         root_source: mantle_source(&receipt.source),
@@ -1137,6 +1333,36 @@ fn bare_blake3(identity: &str) -> &str {
     identity.strip_prefix(BLAKE3_PREFIX).unwrap_or(identity)
 }
 
+fn validate_artifact_wire(artifact: &ArtifactIdentity) -> Result<(), CoreError> {
+    let normalized = normalize_relative_path(&artifact.path)
+        .map_err(|message| invalid_wire(&artifact.path, message))?;
+    if normalized != artifact.path {
+        return Err(invalid_wire(
+            &artifact.path,
+            "artifact path is not canonical",
+        ));
+    }
+    validate_identity(&artifact.identity, &artifact.path)?;
+    if artifact.bytes > ResourceLimits::DEFAULT.max_artifact_bytes {
+        return Err(CoreError::LimitExceeded(artifact.path.clone()));
+    }
+    Ok(())
+}
+
+fn validate_identity(identity: &str, subject: &str) -> Result<(), CoreError> {
+    let Some(hex) = identity.strip_prefix(BLAKE3_PREFIX) else {
+        return Err(invalid_wire(subject, "identity lacks the b3 algorithm tag"));
+    };
+    if hex.len() != BLAKE3_HEX_LENGTH || !hex.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+        return Err(invalid_wire(subject, "identity has malformed BLAKE3 hex"));
+    }
+    Ok(())
+}
+
+fn invalid_wire(subject: &str, message: &str) -> CoreError {
+    CoreError::InvalidRequest(vec![error("invalid-wire", subject, message)])
+}
+
 fn require_nonempty(value: &str, field: &str, diagnostics: &mut Vec<Diagnostic>) {
     if value.trim().is_empty() {
         diagnostics.push(error(
@@ -1211,7 +1437,7 @@ mod tests {
         })
     }
 
-    fn receipt_for(destination: &str, evaluator: &EvaluatorDescriptor) -> ExportReceipt {
+    fn receipt_for(destination: &str, evaluator: &EvaluatorDescriptor) -> AdmittedReceipt {
         let request = request(destination);
         let observation = EvaluationObservation {
             request: &request,
@@ -1709,12 +1935,9 @@ mod tests {
         let receipt = receipt_for("generated/config.json", &evaluator);
         let expected =
             build_manifest(core::slice::from_ref(&receipt)).unwrap_or_else(panic_for_test);
-        let mut weakened = expected.clone();
+        let mut weakened = expected.into_wire();
         weakened.exports[0].non_claim = "export succeeded".to_string();
-        assert_eq!(
-            verify_manifest_fresh(&expected, &weakened),
-            Err(CoreError::StaleManifest)
-        );
+        assert!(admit_manifest(weakened).is_err());
     }
 
     #[test]
@@ -1723,15 +1946,12 @@ mod tests {
         let receipt = receipt_for("generated/config.json", &evaluator);
         let expected =
             build_manifest(core::slice::from_ref(&receipt)).unwrap_or_else(panic_for_test);
-        let mut actual = expected.clone();
+        let mut actual = expected.into_wire();
         actual.exports[0].output.identity = blake3_identity(b"tampered");
-        assert_eq!(
-            verify_manifest_fresh(&expected, &actual),
-            Err(CoreError::StaleManifest)
-        );
+        assert!(admit_manifest(actual).is_err());
     }
 
-    fn custom_receipt(source: &[u8], dependency: &[u8], output: &[u8]) -> ExportReceipt {
+    fn custom_receipt(source: &[u8], dependency: &[u8], output: &[u8]) -> AdmittedReceipt {
         let request = request("generated/config.json");
         let evaluator = evaluator("nickel-cli");
         let observation = EvaluationObservation {

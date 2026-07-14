@@ -13,8 +13,8 @@ use serde::Serialize;
 
 use nickel_export_core::{
     ArtifactMaterial, EvaluationObservation, EvaluatorDescriptor, ExportFormat, ExportManifest,
-    ExportRequest, ImportPathPolicy, ResourceLimits, blake3_identity, build_manifest,
-    build_receipt, normalize_request, verify_manifest_fresh,
+    ExportRequest, ImportPathPolicy, ResourceLimits, VerifiedManifest, admit_manifest,
+    blake3_identity, build_manifest, build_receipt, normalize_request, verify_manifest_fresh,
 };
 
 /// Stable non-zero process exit used for all fail-closed shell errors.
@@ -795,7 +795,7 @@ fn write_artifacts(
     request: &ExportRequest,
     output: &[u8],
     manifest_path: &Path,
-    manifest: &ExportManifest,
+    manifest: &VerifiedManifest,
 ) -> Result<(), ShellError> {
     let manifest_bytes = serde_json::to_vec_pretty(manifest)
         .map_err(|error| ShellError::new("render-manifest", error.to_string()))?;
@@ -813,7 +813,7 @@ fn check_artifacts(
     request: &ExportRequest,
     output: &[u8],
     manifest_path: &Path,
-    manifest: &ExportManifest,
+    manifest: &VerifiedManifest,
     limits: &ResourceLimits,
 ) -> Result<(), ShellError> {
     let checked_output = read_root_file(
@@ -835,6 +835,8 @@ fn check_artifacts(
         limits.max_artifact_bytes,
     )?;
     let checked_manifest: ExportManifest = serde_json::from_slice(&checked_manifest_bytes)
+        .map_err(|error| ShellError::new("check-manifest", error.to_string()))?;
+    let checked_manifest = admit_manifest(checked_manifest)
         .map_err(|error| ShellError::new("check-manifest", error.to_string()))?;
     verify_manifest_fresh(&checked_manifest, manifest)
         .map_err(|error| ShellError::new("check-manifest", error.to_string()))
