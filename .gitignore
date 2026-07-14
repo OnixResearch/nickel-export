@@ -2,5 +2,6 @@
 /result
 /generated
 /.direnv
+/.pi/
 /.envrc.local
 artifacts/

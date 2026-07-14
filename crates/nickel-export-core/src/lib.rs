@@ -99,6 +99,8 @@ impl ExportFormat {
 pub enum ImportPathPolicy {
     /// The shell supplied declared paths; the evaluator did not report a closure.
     DeclaredOnly,
+    /// The shell evaluated a private snapshot but did not sandbox all filesystem reads.
+    SnapshotOnly,
     /// The evaluator reported the complete observed dependency closure.
     EvaluatorObservedClosure,
 }
@@ -109,6 +111,7 @@ impl ImportPathPolicy {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::DeclaredOnly => "declared_only",
+            Self::SnapshotOnly => "snapshot_only",
             Self::EvaluatorObservedClosure => "evaluator_observed_closure",
         }
     }
@@ -914,7 +917,10 @@ fn validate_dependency_closure(
     request: &ExportRequest,
     observation: &EvaluationObservation<'_>,
 ) -> Result<(), CoreError> {
-    if observation.evaluator.import_path_policy == ImportPathPolicy::DeclaredOnly {
+    if matches!(
+        observation.evaluator.import_path_policy,
+        ImportPathPolicy::DeclaredOnly | ImportPathPolicy::SnapshotOnly
+    ) {
         if observation.observed_dependencies.is_empty() {
             return Ok(());
         }

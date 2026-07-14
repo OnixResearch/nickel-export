@@ -22,8 +22,9 @@ For each consumer family:
 
 Canonical receipt and manifest v2 add `declared_input_identity`. Consumers may
 use it to correlate repeated evaluations or detect differing outputs for the
-same declared inputs. They must not use a `declared_only` identity as a trusted
-cache key. Octet and Mantle v1 projections remain unchanged and intentionally
+same declared inputs. They must not use a `declared_only` or `snapshot_only`
+identity as a trusted cache key. Octet and Mantle v1 projections remain
+unchanged and intentionally
 do not gain stronger closure or caching claims.
 
 ## Consumer-specific ownership

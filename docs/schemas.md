@@ -21,10 +21,13 @@ Nickel evaluation. The identity can therefore be computed before evaluation
 and remains the same when the same evaluation is materialized at another
 location.
 
-Under `declared_only`, this is explicitly a fingerprint of declared material,
-not proof of a complete dependency closure and not a safe cache key. The core
-provides `build_declared_input_identity` for consumers that need the identity
-before output bytes exist.
+Under `declared_only` or `snapshot_only`, this is explicitly a fingerprint of
+declared material, not proof of a complete dependency closure and not a safe
+cache key. `snapshot_only` additionally proves that the CLI evaluated a private
+copy of the declared bytes with ambient environment variables removed, but it
+does not claim sandbox confinement. The core provides
+`build_declared_input_identity` for consumers that need the identity before
+output bytes exist.
 
 ## Diagnostic: `onix-nickel-export-diagnostic/v1`
 

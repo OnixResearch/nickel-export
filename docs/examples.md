@@ -97,8 +97,9 @@ declared_input_identity -> exact service.json bytes
 The declared identity does not include the output or its destination. Two runs
 with the same declared identity but different output identities are therefore
 a useful warning about hidden inputs or nondeterministic evaluation. Under the
-CLI's `declared_only` policy it is not a safe cache key because Nickel did not
-report its complete observed import closure.
+CLI's `snapshot_only` policy it is not a safe cache key because the private
+snapshot is not a filesystem sandbox and Nickel did not report its complete
+observed import closure.
 
 The manifest does not claim that the service is correct or safe. It only binds
 those exact declared inputs and output under the recorded evaluator

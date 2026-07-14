@@ -15,7 +15,7 @@ let Contracts = import "contracts.ncl" in
   evaluator = {
     identity = "nixpkgs:nickel",
     version = "nickel-lang-cli-1.17.0",
-    import_path_policy = "declared_only",
+    import_path_policy = "snapshot_only",
   },
   release_checks = [
     "cargo-test",
@@ -31,7 +31,7 @@ let Contracts = import "contracts.ncl" in
   non_claims = [
     "No Nickel evaluation occurs in nickel-export-core.",
     "A receipt does not prove evaluator equivalence, deployability, build success, product-policy conformance, or release eligibility.",
-    "Declared-only external evaluator receipts do not claim an evaluator-observed dependency closure.",
+    "Snapshot-only external evaluator receipts do not claim sandbox confinement or an evaluator-observed dependency closure.",
     "A declared input identity is not a safe cache key.",
   ],
 } | Contracts.RepositoryContract

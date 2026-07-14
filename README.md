@@ -16,7 +16,7 @@ cases where this tool is unnecessary.
 The repository separates a pure core from evaluator and filesystem authority:
 
 - `nickel-export-core` is `#![no_std]` + `alloc`. It normalizes requests, validates complete declared dependency sets, computes BLAKE3 identities, rejects error diagnostics and secret-like material, builds deterministic receipts/manifests, checks freshness, and projects legacy Octet and Mantle shapes. It never evaluates Nickel or performs I/O.
-- `nickel-export` is a thin std shell. It reads declared files, invokes an explicit external Nickel program, applies an optional declared contract, writes generated artifacts, and implements fail-closed `--check` mode.
+- `nickel-export` is a thin std shell. It captures declared files into a private path-preserving snapshot, removes ambient evaluator environment authority, invokes an explicit external Nickel program, applies an optional declared contract, writes generated artifacts, and implements fail-closed `--check` mode.
 
 ## Claim boundary
 
@@ -27,11 +27,12 @@ identities can expose differing outputs across repeated evaluations.
 
 It does **not** prove evaluator equivalence, deployability, consumer-policy
 conformance, build success, semantic correctness, or release eligibility.
-`declared_only` means the external evaluator did not report its observed import
-closure, so that identity is not a safe cache key. Consumers requiring an
-evaluator-observed closure must use an adapter that supplies
-`EvaluatorObservedClosure` evidence to the core. Receipts never conceal this
-distinction.
+`snapshot_only` means the CLI evaluated the captured declared files in a private
+snapshot with ambient environment variables removed, but did not sandbox every
+possible filesystem read or observe the full import closure. The identity is
+therefore not a safe cache key. Consumers requiring an evaluator-observed
+closure must use an adapter that supplies `EvaluatorObservedClosure` evidence
+to the core. Receipts never conceal this distinction.
 
 ## Usage
 

@@ -5,6 +5,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
 
@@ -30,6 +31,10 @@ const FLAG_MANIFEST: &str = "--manifest";
 const FLAG_WRITE: &str = "--write";
 const FLAG_CHECK: &str = "--check";
 const NICKEL_PACKAGE_VERSION_PREFIX: &str = "nickel-lang-cli-";
+const SNAPSHOT_DIRECTORY_PREFIX: &str = "nickel-export-snapshot";
+const SNAPSHOT_PACKAGE_CACHE: &str = ".nickel-package-cache";
+const SNAPSHOT_CREATE_ATTEMPTS: u64 = 64;
+static SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Shell error with a stable stage classification.
 #[derive(Debug, Serialize)]
@@ -81,6 +86,23 @@ struct EvaluationPlan {
     current_dir: PathBuf,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CapturedFile {
+    path: String,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct EvaluationSnapshot {
+    root: PathBuf,
+}
+
+impl Drop for EvaluationSnapshot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
 /// Execute the CLI shell around the pure core.
 ///
 /// # Errors
@@ -111,14 +133,17 @@ fn execute(options: &CliOptions) -> Result<(), ShellError> {
             read_root_file(&root, path, "read-dependency").map(|bytes| (path.as_str(), bytes))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let plan = evaluation_plan(options, &request, &root);
+    let captured = capture_files(&request, &source_bytes, &dependency_bytes)?;
+    let snapshot = materialize_snapshot(&request, &captured)?;
+    let evaluator_program = resolve_evaluator_program(&options.evaluator)?;
+    let plan = evaluation_plan(&evaluator_program, &request, &snapshot.root);
     verify_evaluator_version(&plan.program, &options.evaluator_version)?;
     let output = run_evaluator(&plan)?;
     let evaluator = EvaluatorDescriptor {
         identity: options.evaluator_identity.clone(),
         version: options.evaluator_version.clone(),
         options: evaluator_options(&request),
-        import_path_policy: ImportPathPolicy::DeclaredOnly,
+        import_path_policy: ImportPathPolicy::SnapshotOnly,
     };
     let dependencies = dependency_bytes
         .iter()
@@ -285,9 +310,141 @@ fn validate_shell_contract(request: &ExportRequest) -> Result<(), ShellError> {
     }
 }
 
-fn evaluation_plan(options: &CliOptions, request: &ExportRequest, root: &Path) -> EvaluationPlan {
+// r[impl nickel_export.shell.captured_input_evaluation]
+fn capture_files(
+    request: &ExportRequest,
+    source_bytes: &[u8],
+    dependency_bytes: &[(&str, Vec<u8>)],
+) -> Result<Vec<CapturedFile>, ShellError> {
+    if request.dependencies.len() != dependency_bytes.len() {
+        return Err(ShellError::new(
+            "capture-inputs",
+            "captured dependency count differs from normalized request",
+        ));
+    }
+    let mut captured = Vec::with_capacity(request.dependencies.len() + 1);
+    captured.push(CapturedFile {
+        path: request.source.clone(),
+        bytes: source_bytes.to_vec(),
+    });
+    for (declared, (path, bytes)) in request.dependencies.iter().zip(dependency_bytes) {
+        if declared != path {
+            return Err(ShellError::new(
+                "capture-inputs",
+                format!("captured dependency `{path}` differs from declared `{declared}`"),
+            ));
+        }
+        captured.push(CapturedFile {
+            path: declared.clone(),
+            bytes: bytes.clone(),
+        });
+    }
+    Ok(captured)
+}
+
+fn materialize_snapshot(
+    request: &ExportRequest,
+    captured: &[CapturedFile],
+) -> Result<EvaluationSnapshot, ShellError> {
+    let snapshot = EvaluationSnapshot {
+        root: create_snapshot_root()?,
+    };
+    for file in captured {
+        write_snapshot_file(&snapshot.root, file)?;
+    }
+    for import_path in &request.import_paths {
+        fs::create_dir_all(snapshot.root.join(import_path)).map_err(|error| {
+            ShellError::new("snapshot-import-path", format!("{import_path}: {error}"))
+        })?;
+    }
+    fs::create_dir_all(snapshot.root.join(SNAPSHOT_PACKAGE_CACHE))
+        .map_err(|error| ShellError::new("snapshot-package-cache", error.to_string()))?;
+    Ok(snapshot)
+}
+
+fn create_snapshot_root() -> Result<PathBuf, ShellError> {
+    let parent = std::env::temp_dir();
+    let process_id = std::process::id();
+    for _ in 0..SNAPSHOT_CREATE_ATTEMPTS {
+        let sequence = SNAPSHOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            "{SNAPSHOT_DIRECTORY_PREFIX}-{process_id}-{sequence}"
+        ));
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(ShellError::new(
+                    "snapshot-create",
+                    format!("{}: {error}", candidate.display()),
+                ));
+            }
+        }
+    }
+    Err(ShellError::new(
+        "snapshot-create",
+        "exhausted bounded snapshot path attempts",
+    ))
+}
+
+fn write_snapshot_file(root: &Path, file: &CapturedFile) -> Result<(), ShellError> {
+    let destination = root.join(&file.path);
+    let Some(parent) = destination.parent() else {
+        return Err(ShellError::new(
+            "snapshot-write",
+            format!("{} has no parent", destination.display()),
+        ));
+    };
+    fs::create_dir_all(parent).map_err(|error| {
+        ShellError::new("snapshot-write", format!("{}: {error}", parent.display()))
+    })?;
+    fs::write(&destination, &file.bytes).map_err(|error| {
+        ShellError::new(
+            "snapshot-write",
+            format!("{}: {error}", destination.display()),
+        )
+    })
+}
+
+fn resolve_evaluator_program(program: &Path) -> Result<PathBuf, ShellError> {
+    if program.is_absolute() || program.components().count() > 1 {
+        return canonical_evaluator_program(program);
+    }
+    let path = std::env::var_os("PATH")
+        .ok_or_else(|| ShellError::new("evaluator-path", "PATH is unavailable"))?;
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join(program);
+        if candidate.is_file() {
+            return canonical_evaluator_program(&candidate);
+        }
+    }
+    Err(ShellError::new(
+        "evaluator-path",
+        format!("could not resolve `{}`", program.display()),
+    ))
+}
+
+fn canonical_evaluator_program(program: &Path) -> Result<PathBuf, ShellError> {
+    let canonical = program.canonicalize().map_err(|error| {
+        ShellError::new("evaluator-path", format!("{}: {error}", program.display()))
+    })?;
+    if canonical.is_file() {
+        Ok(canonical)
+    } else {
+        Err(ShellError::new(
+            "evaluator-path",
+            format!("{} is not a file", canonical.display()),
+        ))
+    }
+}
+
+fn evaluation_plan(program: &Path, request: &ExportRequest, root: &Path) -> EvaluationPlan {
     let mut args = vec![
         OsString::from("export"),
+        OsString::from("--color"),
+        OsString::from("never"),
+        OsString::from("--package-cache-dir"),
+        root.join(SNAPSHOT_PACKAGE_CACHE).into_os_string(),
         OsString::from("--format"),
         OsString::from(evaluator_format(request.format)),
         OsString::from(&request.source),
@@ -305,7 +462,7 @@ fn evaluation_plan(options: &CliOptions, request: &ExportRequest, root: &Path) -
         args.push(root.join(&request.contract).into_os_string());
     }
     EvaluationPlan {
-        program: options.evaluator.clone(),
+        program: program.to_path_buf(),
         args,
         current_dir: root.to_path_buf(),
     }
@@ -338,7 +495,7 @@ fn evaluator_options(request: &ExportRequest) -> Vec<String> {
 }
 
 fn verify_evaluator_version(program: &Path, expected: &str) -> Result<(), ShellError> {
-    let output = Command::new(program)
+    let output = evaluator_command(program)
         .arg("--version")
         .output()
         .map_err(|error| ShellError::new("evaluator-version", error.to_string()))?;
@@ -368,8 +525,14 @@ fn verify_evaluator_version(program: &Path, expected: &str) -> Result<(), ShellE
     }
 }
 
+fn evaluator_command(program: &Path) -> Command {
+    let mut command = Command::new(program);
+    command.env_clear();
+    command
+}
+
 fn run_evaluator(plan: &EvaluationPlan) -> Result<Output, ShellError> {
-    let output = Command::new(&plan.program)
+    let output = evaluator_command(&plan.program)
         .args(&plan.args)
         .current_dir(&plan.current_dir)
         .output()
@@ -623,10 +786,75 @@ mod tests {
             destination: "generated/value.txt".to_string(),
             allow_secret_material: false,
         };
-        let plan = evaluation_plan(&options, &request, Path::new("/tmp/root"));
+        let plan = evaluation_plan(&options.evaluator, &request, Path::new("/tmp/root"));
         assert_eq!(plan.program, PathBuf::from("nickel"));
         assert!(plan.args.contains(&OsString::from("text")));
         assert!(plan.args.contains(&OsString::from("--apply-contract")));
+        assert!(plan.args.contains(&OsString::from("--package-cache-dir")));
+        assert!(plan.args.contains(&OsString::from("never")));
+    }
+
+    // r[verify nickel_export.shell.captured_input_evaluation]
+    #[test]
+    fn snapshot_uses_captured_bytes_and_cleans_up() {
+        let repository =
+            std::env::temp_dir().join(format!("nickel-export-capture-test-{}", std::process::id()));
+        if let Err(error) = fs::remove_dir_all(&repository) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                panic_for_test::<()>(&ShellError::new("test-cleanup", error.to_string()));
+            }
+        }
+        fs::create_dir_all(repository.join("config")).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-setup", error.to_string()));
+        });
+        let source_path = repository.join("config/source.ncl");
+        let captured_bytes = b"{ value = \"captured\" }\n";
+        let changed_bytes = b"{ value = \"changed\" }\n";
+        fs::write(&source_path, captured_bytes).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-setup", error.to_string()));
+        });
+        let request = ExportRequest {
+            schema: nickel_export_core::REQUEST_SCHEMA.to_string(),
+            family_id: "tests.snapshot".to_string(),
+            source: "config/source.ncl".to_string(),
+            dependencies: Vec::new(),
+            import_paths: vec!["config".to_string()],
+            selector: String::new(),
+            contract: String::new(),
+            format: ExportFormat::Json,
+            destination: "generated/config.json".to_string(),
+            allow_secret_material: false,
+        };
+        let source = fs::read(&source_path).unwrap_or_else(|error| {
+            panic_for_test::<Vec<u8>>(&ShellError::new("test-read", error.to_string()))
+        });
+        let captured =
+            capture_files(&request, &source, &[]).unwrap_or_else(|error| panic_for_test(&error));
+        let snapshot = materialize_snapshot(&request, &captured)
+            .unwrap_or_else(|error| panic_for_test(&error));
+        let snapshot_root = snapshot.root.clone();
+        fs::write(&source_path, changed_bytes).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-mutate", error.to_string()));
+        });
+        let evaluated_bytes =
+            fs::read(snapshot.root.join(&request.source)).unwrap_or_else(|error| {
+                panic_for_test::<Vec<u8>>(&ShellError::new("test-read", error.to_string()))
+            });
+
+        assert_eq!(evaluated_bytes, captured_bytes);
+        assert_ne!(evaluated_bytes, changed_bytes);
+        assert!(snapshot.root.join(SNAPSHOT_PACKAGE_CACHE).is_dir());
+        drop(snapshot);
+        assert!(!snapshot_root.exists());
+        fs::remove_dir_all(&repository).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-cleanup", error.to_string()));
+        });
+    }
+
+    #[test]
+    fn evaluator_command_has_no_ambient_environment() {
+        let command = evaluator_command(Path::new("/bin/true"));
+        assert_eq!(command.get_envs().count(), 0);
     }
 
     #[test]
