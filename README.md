@@ -53,7 +53,7 @@ nix develop -c cargo run --quiet -p nickel-export -- export \
   --check
 ```
 
-Use `--write` to update the destination and manifest. Exactly one of `--write` and `--check` is required. Source, dependency, evaluator, output, diagnostic, and process-time bounds come from the Nickel-authored `config/resource-limits.ncl` profile embedded in the CLI; timeout, stream overflow, and size conversion failures issue no receipt.
+Use `--write` to update the destination and manifest. Exactly one of `--write` and `--check` is required. Write and check modes take a repository lock; writes stage and sync both files, publish a durable transaction marker, atomically rename each file, and leave interrupted transactions fail-closed for deterministic recovery. Embedded consumers may instead atomically publish one pointer to a complete generation directory. Source, dependency, evaluator, output, diagnostic, and process-time bounds come from the Nickel-authored `config/resource-limits.ncl` profile embedded in the CLI; timeout, stream overflow, and size conversion failures issue no receipt.
 
 Verify stored canonical integrity without running Nickel or writing files:
 

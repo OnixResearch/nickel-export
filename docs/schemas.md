@@ -64,6 +64,17 @@ The core rejects source/output path mismatches, incomplete dependency material, 
 
 A manifest contains receipts sorted by destination and one shared evaluator descriptor. Duplicate destinations and mixed evaluator descriptors are rejected. `manifest_identity` is BLAKE3 over `onix-nickel-export-manifest-identity/v1` canonical bytes before the identity field is attached. Receipt and manifest canonical bytes use checked big-endian lengths and list counts; pretty JSON remains only the human-facing wire representation. Freshness is exact equality against a newly derived manifest.
 
+## Materialization transaction: `onix-nickel-export-materialization-transaction/v1`
+
+Write and check modes coordinate through a repository lock. Write mode stages
+and synchronizes output and manifest bytes, then records their temporary and
+destination paths plus BLAKE3 identities in a durable transaction marker. A
+check rejects any extant marker. A later write deterministically completes a
+matching interrupted transaction before starting another. This is
+crash-consistent and fail-closed; it does not claim portable atomic replacement
+of two unrelated paths. Consumers that support generation directories can use
+one atomically replaced pointer file instead.
+
 ## Integrity report: `onix-nickel-export-integrity-report/v1`
 
 `nickel-export verify` strictly decodes and admits a stored manifest, recomputes

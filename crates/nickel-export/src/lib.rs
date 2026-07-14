@@ -3,14 +3,14 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fmt;
-use std::fs;
-use std::io::Read;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use nickel_export_core::{
     ArtifactMaterial, EvaluationObservation, EvaluatorDescriptor, ExportFormat, ExportManifest,
@@ -43,9 +43,14 @@ const SNAPSHOT_DIRECTORY_PREFIX: &str = "nickel-export-snapshot";
 const SNAPSHOT_PACKAGE_CACHE: &str = ".nickel-package-cache";
 const SNAPSHOT_CREATE_ATTEMPTS: u64 = 64;
 const STREAM_BUFFER_BYTES: usize = 8_192;
+const MATERIALIZATION_LOCK_PATH: &str = ".nickel-export.lock";
+const TRANSACTION_MARKER_PATH: &str = ".nickel-export.transaction.json";
+const STAGED_FILE_TAG: &str = "nickel-export-tmp";
+const LOCK_ACQUIRE_ATTEMPTS: u64 = 2;
 const DEFAULT_RESOURCE_LIMITS_JSON: &str =
     include_str!("../../../config/generated/resource-limits.json");
 static SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static MATERIALIZATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Shell error with a stable stage classification.
 #[derive(Debug, Serialize)]
@@ -103,6 +108,39 @@ struct IntegrityReport {
     manifest_identity: String,
     artifacts_checked: usize,
     claim: &'static str,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TransactionArtifact {
+    temporary: String,
+    destination: String,
+    identity: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MaterializationTransaction {
+    schema: String,
+    output: TransactionArtifact,
+    manifest: TransactionArtifact,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecoveryAction {
+    PublishTemporary,
+    DestinationAlreadyPublished,
+}
+
+#[derive(Debug)]
+struct MaterializationLock {
+    path: PathBuf,
+}
+
+impl Drop for MaterializationLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -918,6 +956,46 @@ fn join_bounded_reader(
         .map_err(|_| ShellError::new(stage, "stream reader thread failed"))?
 }
 
+/// Atomically publish a pointer to an already complete generation directory.
+///
+/// Consumers opting into generation-pointer mode read the pointer file as a
+/// repository-relative directory path. Plain-file export mode continues to use
+/// the fail-closed two-artifact transaction protocol.
+///
+/// # Errors
+///
+/// Rejects unsafe paths, missing generation directories, lock contention, and
+/// staging or publication failures.
+pub fn publish_generation_pointer(
+    root: &Path,
+    generation: &Path,
+    pointer: &Path,
+) -> Result<(), ShellError> {
+    validate_relative_shell_path(generation, "generation-directory")?;
+    validate_relative_shell_path(pointer, "generation-pointer")?;
+    let canonical_generation = root.join(generation).canonicalize().map_err(|error| {
+        ShellError::new(
+            "generation-pointer",
+            format!("{}: {error}", generation.display()),
+        )
+    })?;
+    if !canonical_generation.starts_with(root) || !canonical_generation.is_dir() {
+        return Err(ShellError::new(
+            "generation-pointer",
+            "generation must be an existing directory inside the repository root",
+        ));
+    }
+    let _lock = acquire_materialization_lock(root)?;
+    reject_incomplete_transaction(root)?;
+    let generation_bytes = generation
+        .to_str()
+        .ok_or_else(|| ShellError::new("generation-pointer", "generation path is not UTF-8"))?
+        .as_bytes();
+    let staged = stage_artifact(root, pointer, generation_bytes)?;
+    publish_transaction_artifact(root, &staged)
+}
+
+// r[impl nickel_export.shell.atomic_materialization]
 fn write_artifacts(
     root: &Path,
     request: &ExportRequest,
@@ -925,15 +1003,30 @@ fn write_artifacts(
     manifest_path: &Path,
     manifest: &VerifiedManifest,
 ) -> Result<(), ShellError> {
+    let _lock = acquire_materialization_lock(root)?;
+    recover_transaction(root)?;
     let manifest_bytes = serde_json::to_vec_pretty(manifest)
         .map_err(|error| ShellError::new("render-manifest", error.to_string()))?;
-    write_root_file(
-        root,
-        Path::new(&request.destination),
-        output,
-        "write-output",
-    )?;
-    write_root_file(root, manifest_path, &manifest_bytes, "write-manifest")
+    let output_artifact = stage_artifact(root, Path::new(&request.destination), output)?;
+    let manifest_artifact = match stage_artifact(root, manifest_path, &manifest_bytes) {
+        Ok(artifact) => artifact,
+        Err(error) => {
+            let _ = fs::remove_file(root.join(&output_artifact.temporary));
+            return Err(error);
+        }
+    };
+    let transaction = MaterializationTransaction {
+        schema: "onix-nickel-export-materialization-transaction/v1".to_string(),
+        output: output_artifact,
+        manifest: manifest_artifact,
+    };
+    if let Err(error) = write_transaction_marker(root, &transaction) {
+        let _ = fs::remove_file(root.join(&transaction.output.temporary));
+        let _ = fs::remove_file(root.join(&transaction.manifest.temporary));
+        return Err(error);
+    }
+    publish_transaction(root, &transaction)?;
+    finish_transaction(root)
 }
 
 fn check_artifacts(
@@ -944,6 +1037,8 @@ fn check_artifacts(
     manifest: &VerifiedManifest,
     limits: &ResourceLimits,
 ) -> Result<(), ShellError> {
+    let _lock = acquire_materialization_lock(root)?;
+    reject_incomplete_transaction(root)?;
     let checked_output = read_root_file(
         root,
         &request.destination,
@@ -1034,30 +1129,256 @@ fn read_root_path(
     read_file_bounded(&canonical, stage, max_bytes)
 }
 
-fn write_root_file(
-    root: &Path,
-    path: &Path,
-    bytes: &[u8],
-    stage: &'static str,
-) -> Result<(), ShellError> {
-    validate_relative_shell_path(path, stage)?;
-    reject_symlink_components(root, path, stage)?;
-    let destination = root.join(path);
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| ShellError::new(stage, format!("{}: {error}", parent.display())))?;
-        let canonical_parent = parent
-            .canonicalize()
-            .map_err(|error| ShellError::new(stage, format!("{}: {error}", parent.display())))?;
-        if !canonical_parent.starts_with(root) {
-            return Err(ShellError::new(
-                "unsafe-path",
-                format!("{} escapes the repository root", parent.display()),
-            ));
+fn acquire_materialization_lock(root: &Path) -> Result<MaterializationLock, ShellError> {
+    let path = root.join(MATERIALIZATION_LOCK_PATH);
+    for _ in 0..LOCK_ACQUIRE_ATTEMPTS {
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                file.write_all(std::process::id().to_string().as_bytes())
+                    .and_then(|()| file.sync_all())
+                    .map_err(|error| ShellError::new("materialization-lock", error.to_string()))?;
+                sync_directory(root, "materialization-lock")?;
+                return Ok(MaterializationLock { path });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if lock_owner_is_live(&path) {
+                    return Err(ShellError::new(
+                        "materialization-lock",
+                        "another materialization operation owns the repository lock",
+                    ));
+                }
+                fs::remove_file(&path).map_err(|remove_error| {
+                    ShellError::new("materialization-lock", remove_error.to_string())
+                })?;
+            }
+            Err(error) => {
+                return Err(ShellError::new(
+                    "materialization-lock",
+                    format!("{}: {error}", path.display()),
+                ));
+            }
         }
     }
-    fs::write(&destination, bytes)
-        .map_err(|error| ShellError::new(stage, format!("{}: {error}", destination.display())))
+    Err(ShellError::new(
+        "materialization-lock",
+        "exhausted bounded lock acquisition attempts",
+    ))
+}
+
+fn lock_owner_is_live(path: &Path) -> bool {
+    let Ok(owner) = fs::read_to_string(path) else {
+        return true;
+    };
+    let Ok(process_id) = owner.trim().parse::<u32>() else {
+        return true;
+    };
+    process_is_live(process_id)
+}
+
+#[cfg(target_os = "linux")]
+fn process_is_live(process_id: u32) -> bool {
+    Path::new("/proc").join(process_id.to_string()).exists()
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn process_is_live(_process_id: u32) -> bool {
+    true
+}
+
+fn stage_artifact(
+    root: &Path,
+    destination: &Path,
+    bytes: &[u8],
+) -> Result<TransactionArtifact, ShellError> {
+    validate_relative_shell_path(destination, "stage-artifact")?;
+    reject_symlink_components(root, destination, "stage-artifact")?;
+    let parent = destination.parent().unwrap_or_else(|| Path::new(""));
+    let canonical_parent = prepare_destination_parent(root, parent, "stage-artifact")?;
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| ShellError::new("stage-artifact", "destination filename is not UTF-8"))?;
+    let sequence = MATERIALIZATION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let staged_name = format!(
+        ".{file_name}.{STAGED_FILE_TAG}-{}-{sequence}",
+        std::process::id()
+    );
+    let temporary = parent.join(staged_name);
+    let temporary_string = temporary
+        .to_str()
+        .ok_or_else(|| ShellError::new("stage-artifact", "temporary path is not UTF-8"))?
+        .to_string();
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(root.join(&temporary))
+        .map_err(|error| ShellError::new("stage-artifact", error.to_string()))?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| ShellError::new("stage-artifact", error.to_string()))?;
+    sync_directory(&canonical_parent, "stage-artifact")?;
+    Ok(TransactionArtifact {
+        temporary: temporary_string,
+        destination: destination
+            .to_str()
+            .ok_or_else(|| ShellError::new("stage-artifact", "destination is not UTF-8"))?
+            .to_string(),
+        identity: blake3_identity(bytes),
+    })
+}
+
+fn prepare_destination_parent(
+    root: &Path,
+    relative_parent: &Path,
+    stage: &'static str,
+) -> Result<PathBuf, ShellError> {
+    let parent = root.join(relative_parent);
+    fs::create_dir_all(&parent)
+        .map_err(|error| ShellError::new(stage, format!("{}: {error}", parent.display())))?;
+    let canonical = parent
+        .canonicalize()
+        .map_err(|error| ShellError::new(stage, format!("{}: {error}", parent.display())))?;
+    if !canonical.starts_with(root) {
+        return Err(ShellError::new(
+            "unsafe-path",
+            format!("{} escapes the repository root", parent.display()),
+        ));
+    }
+    Ok(canonical)
+}
+
+fn write_transaction_marker(
+    root: &Path,
+    transaction: &MaterializationTransaction,
+) -> Result<(), ShellError> {
+    let marker = root.join(TRANSACTION_MARKER_PATH);
+    let bytes = serde_json::to_vec_pretty(transaction)
+        .map_err(|error| ShellError::new("transaction-marker", error.to_string()))?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker)
+        .map_err(|error| ShellError::new("transaction-marker", error.to_string()))?;
+    file.write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| ShellError::new("transaction-marker", error.to_string()))?;
+    sync_directory(root, "transaction-marker")
+}
+
+fn recover_transaction(root: &Path) -> Result<(), ShellError> {
+    let marker = root.join(TRANSACTION_MARKER_PATH);
+    if !marker.exists() {
+        return Ok(());
+    }
+    let bytes = read_file_bounded(
+        &marker,
+        "transaction-recovery",
+        ResourceLimits::DEFAULT.max_artifact_bytes,
+    )?;
+    let transaction: MaterializationTransaction = serde_json::from_slice(&bytes)
+        .map_err(|error| ShellError::new("transaction-recovery", error.to_string()))?;
+    if transaction.schema != "onix-nickel-export-materialization-transaction/v1" {
+        return Err(ShellError::new(
+            "transaction-recovery",
+            "unsupported transaction schema",
+        ));
+    }
+    publish_transaction(root, &transaction)?;
+    finish_transaction(root)
+}
+
+fn publish_transaction(
+    root: &Path,
+    transaction: &MaterializationTransaction,
+) -> Result<(), ShellError> {
+    publish_transaction_artifact(root, &transaction.output)?;
+    publish_transaction_artifact(root, &transaction.manifest)
+}
+
+fn publish_transaction_artifact(
+    root: &Path,
+    artifact: &TransactionArtifact,
+) -> Result<(), ShellError> {
+    let temporary = Path::new(&artifact.temporary);
+    let destination = Path::new(&artifact.destination);
+    validate_relative_shell_path(temporary, "transaction-publish")?;
+    validate_relative_shell_path(destination, "transaction-publish")?;
+    reject_symlink_components(root, temporary, "transaction-publish")?;
+    reject_symlink_components(root, destination, "transaction-publish")?;
+    let temporary_path = root.join(temporary);
+    let destination_path = root.join(destination);
+    let temporary_identity = optional_file_identity(&temporary_path)?;
+    let destination_identity = optional_file_identity(&destination_path)?;
+    let action = recovery_action(
+        temporary_identity.as_deref(),
+        destination_identity.as_deref(),
+        &artifact.identity,
+    )?;
+    if action == RecoveryAction::PublishTemporary {
+        fs::rename(&temporary_path, &destination_path).map_err(|error| {
+            ShellError::new(
+                "transaction-publish",
+                format!("{}: {error}", destination_path.display()),
+            )
+        })?;
+    }
+    let parent = destination_path.parent().unwrap_or(root);
+    sync_directory(parent, "transaction-publish")
+}
+
+fn optional_file_identity(path: &Path) -> Result<Option<String>, ShellError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = read_file_bounded(
+        path,
+        "transaction-publish",
+        ResourceLimits::DEFAULT.max_artifact_bytes,
+    )?;
+    Ok(Some(blake3_identity(&bytes)))
+}
+
+fn recovery_action(
+    temporary_identity: Option<&str>,
+    destination_identity: Option<&str>,
+    expected_identity: &str,
+) -> Result<RecoveryAction, ShellError> {
+    match (temporary_identity, destination_identity) {
+        (Some(temporary), _) if temporary == expected_identity => {
+            Ok(RecoveryAction::PublishTemporary)
+        }
+        (None, Some(destination)) if destination == expected_identity => {
+            Ok(RecoveryAction::DestinationAlreadyPublished)
+        }
+        _ => Err(ShellError::new(
+            "transaction-publish",
+            "neither staged nor destination bytes match the recorded identity",
+        )),
+    }
+}
+
+fn finish_transaction(root: &Path) -> Result<(), ShellError> {
+    let marker = root.join(TRANSACTION_MARKER_PATH);
+    fs::remove_file(&marker)
+        .map_err(|error| ShellError::new("transaction-finish", error.to_string()))?;
+    sync_directory(root, "transaction-finish")
+}
+
+fn reject_incomplete_transaction(root: &Path) -> Result<(), ShellError> {
+    if root.join(TRANSACTION_MARKER_PATH).exists() {
+        Err(ShellError::new(
+            "transaction-incomplete",
+            "an interrupted materialization transaction requires recovery",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn sync_directory(path: &Path, stage: &'static str) -> Result<(), ShellError> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| ShellError::new(stage, format!("{}: {error}", path.display())))
 }
 
 fn reject_symlink_components(
@@ -1390,6 +1711,83 @@ mod tests {
         assert!(rendered.contains(SHELL_ERROR_SCHEMA));
         assert!(rendered.contains("arguments"));
         assert!(!rendered.contains("receipt"));
+    }
+
+    // r[verify nickel_export.shell.atomic_materialization]
+    #[test]
+    fn materialization_lock_and_recovery_are_fail_closed_and_idempotent() {
+        let root = std::env::temp_dir().join(format!(
+            "nickel-export-transaction-test-{}",
+            std::process::id()
+        ));
+        if let Err(error) = fs::remove_dir_all(&root) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                panic_for_test::<()>(&ShellError::new("test-cleanup", error.to_string()));
+            }
+        }
+        fs::create_dir_all(&root).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-setup", error.to_string()));
+        });
+        let lock =
+            acquire_materialization_lock(&root).unwrap_or_else(|error| panic_for_test(&error));
+        assert!(acquire_materialization_lock(&root).is_err());
+        drop(lock);
+        let recovered_lock =
+            acquire_materialization_lock(&root).unwrap_or_else(|error| panic_for_test(&error));
+
+        let output_bytes = b"transaction output\n";
+        let manifest_bytes = b"transaction manifest\n";
+        let output_identity = blake3_identity(output_bytes);
+        assert_eq!(
+            recovery_action(Some(&output_identity), None, &output_identity).ok(),
+            Some(RecoveryAction::PublishTemporary)
+        );
+        assert_eq!(
+            recovery_action(None, Some(&output_identity), &output_identity).ok(),
+            Some(RecoveryAction::DestinationAlreadyPublished)
+        );
+        assert!(recovery_action(None, None, &output_identity).is_err());
+        let output = stage_artifact(&root, Path::new("generated/output.json"), output_bytes)
+            .unwrap_or_else(|error| panic_for_test(&error));
+        let manifest = stage_artifact(&root, Path::new("generated/manifest.json"), manifest_bytes)
+            .unwrap_or_else(|error| panic_for_test(&error));
+        let transaction = MaterializationTransaction {
+            schema: "onix-nickel-export-materialization-transaction/v1".to_string(),
+            output,
+            manifest,
+        };
+        write_transaction_marker(&root, &transaction)
+            .unwrap_or_else(|error| panic_for_test(&error));
+        publish_transaction_artifact(&root, &transaction.output)
+            .unwrap_or_else(|error| panic_for_test(&error));
+        assert!(reject_incomplete_transaction(&root).is_err());
+        recover_transaction(&root).unwrap_or_else(|error| panic_for_test(&error));
+        assert_eq!(
+            fs::read(root.join("generated/output.json")).unwrap_or_default(),
+            output_bytes
+        );
+        assert_eq!(
+            fs::read(root.join("generated/manifest.json")).unwrap_or_default(),
+            manifest_bytes
+        );
+        assert!(!root.join(TRANSACTION_MARKER_PATH).exists());
+        assert!(recover_transaction(&root).is_ok());
+        drop(recovered_lock);
+
+        let generation = Path::new("generations/complete");
+        fs::create_dir_all(root.join(generation)).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-setup", error.to_string()));
+        });
+        let pointer = Path::new("generated/current-generation");
+        publish_generation_pointer(&root, generation, pointer)
+            .unwrap_or_else(|error| panic_for_test(&error));
+        assert_eq!(
+            fs::read(root.join(pointer)).unwrap_or_default(),
+            generation.as_os_str().as_encoded_bytes()
+        );
+        fs::remove_dir_all(&root).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-cleanup", error.to_string()));
+        });
     }
 
     #[cfg(unix)]

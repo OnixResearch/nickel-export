@@ -3,5 +3,8 @@
 /generated
 /.direnv
 /.pi/
+/.nickel-export.lock
+/.nickel-export.transaction.json
+*.nickel-export-tmp-*
 /.envrc.local
 artifacts/
