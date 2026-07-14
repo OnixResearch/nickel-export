@@ -16,5 +16,5 @@
 
 ## Phase 4: Verify and archive
 
-- [ ] [serial] V1: Run focused Rust, no-std/Wasm, Cairn lifecycle, CLI freshness, and full Nix validation [r[nickel_export.core.declared_input_identity]]
-- [ ] [serial] V2: Sync the accepted specification and archive the completed change with updated release evidence [r[nickel_export.core.declared_input_identity]]
+- [x] [serial] V1: Run focused Rust, no-std/Wasm, Cairn lifecycle, CLI freshness, and full Nix validation [r[nickel_export.core.declared_input_identity]]
+- [x] [serial] V2: Sync the accepted specification and archive the completed change with updated release evidence [r[nickel_export.core.declared_input_identity]]

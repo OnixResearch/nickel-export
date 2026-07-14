@@ -18,14 +18,14 @@ Date: 2026-07-13
 
 ## Verification
 
-- `cargo test --workspace`: passed with positive and negative core and CLI cases.
+- `cargo test --workspace`: passed with positive and negative core and CLI cases, including declared-input repeatability, deliberate exclusions, semantic-input sensitivity, and malformed-material rejection.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo check -p nickel-export-core --no-default-features --target wasm32-unknown-unknown`: passed.
 - `cargo doc --workspace --no-deps`: passed.
-- Four real external Nickel fixture families passed write and check mode: JSON, TOML, YAML, and raw text.
-- Negative rails reject unsafe traversal, symlink components, secret-like material without opt-in, unbound contracts, incomplete dependency closures, undeclared observed imports, evaluator/contract errors, evaluator version mismatch, mixed evaluator manifests, duplicate outputs, stale manifests, and tampered generated output.
-- `cairn validate --root .`: passed with one accepted spec and no active changes.
-- `cairn traceability coverage --root . --profile nickel-export-default --json`: passed, seven of seven requirements referenced; receipt hash `43ee8574a2551a0ac8e98876eded115ea11b8553d5ca1ffc9f30e7098484928a`.
+- Four real external Nickel format fixtures and the worked service example passed write and check mode: JSON, TOML, YAML, raw text, and service JSON.
+- Negative rails reject unsafe traversal, symlink components, secret-like material without opt-in, unbound contracts, incomplete dependency closures, undeclared observed imports, evaluator/contract errors, evaluator version mismatch, mixed evaluator manifests, duplicate outputs, stale manifests, tampered generated output, and mismatched declared-input material.
+- `cairn validate --root .`: passed with one accepted spec and no active changes after archival.
+- `cairn traceability coverage --root . --profile nickel-export-default --json`: passed, eight of eight requirements referenced; receipt hash `14f1b05c21ed0468cf686853ca7c096faed830ce14673e7a40105419bb505df7`.
 - `nix flake check -L`: passed the final release rail covering package tests, format, strict Clippy, host/Wasm no-std checks, typed Nickel freshness, Cairn policy/traceability, CLI exact-output freshness, malformed input, evaluator drift, and tamper rejection. The local run checked `x86_64-linux`; Nix reported `aarch64-linux` as an unevaluated incompatible system, not a failed check.
 
 ## Publication boundary
