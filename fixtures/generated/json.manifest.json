@@ -3,11 +3,16 @@
   "generator": "nickel-export-core/v2",
   "evaluator": {
     "identity": "nixpkgs:nickel",
+    "artifact_identity": "b3:44110681fb63c5a68c4476d76bc6dbc86ae295e791bdc6125d02e8a4acb02d34",
+    "closure_identity": "",
+    "plan_identity": "b3:f4d00ff9f0ee20419fa2b63715afba83f5d3c5ae4cbfec3a59da45ef5db13944",
     "version": "nickel-lang-cli-1.17.0",
     "options": [
+      "color=never",
       "contract=fixtures/contract.ncl",
       "format=json",
-      "import-path=fixtures"
+      "import-path=fixtures",
+      "package-cache=private-empty"
     ],
     "import_path_policy": "snapshot_only"
   },
@@ -15,7 +20,7 @@
     {
       "schema": "onix-nickel-export-receipt/v2",
       "family_id": "fixtures.json",
-      "declared_input_identity": "b3:a599809f6633dde127d81a9e527f263b6147ce82a398f0ed83028eb8a97a2055",
+      "declared_input_identity": "b3:6f2c518cda51cd96909908888747124a3fbc01376193f77ac9b96bb0ba7385eb",
       "source": {
         "path": "fixtures/config.ncl",
         "identity": "b3:9e5b958d59b2e8f9f80ac3579350f5d177909a816061794cf0b248ad45a2cb03",
@@ -41,11 +46,16 @@
       },
       "evaluator": {
         "identity": "nixpkgs:nickel",
+        "artifact_identity": "b3:44110681fb63c5a68c4476d76bc6dbc86ae295e791bdc6125d02e8a4acb02d34",
+        "closure_identity": "",
+        "plan_identity": "b3:f4d00ff9f0ee20419fa2b63715afba83f5d3c5ae4cbfec3a59da45ef5db13944",
         "version": "nickel-lang-cli-1.17.0",
         "options": [
+          "color=never",
           "contract=fixtures/contract.ncl",
           "format=json",
-          "import-path=fixtures"
+          "import-path=fixtures",
+          "package-cache=private-empty"
         ],
         "import_path_policy": "snapshot_only"
       },
@@ -53,5 +63,5 @@
       "non_claim": "Nickel export success proves only exact declared input and output identities under the recorded evaluator descriptor; the declared input identity is not proof of a complete dependency closure or a safe cache key; the receipt does not prove deployability, product-policy conformance, evaluator equivalence, build success, or release eligibility"
     }
   ],
-  "manifest_identity": "b3:d1da05b5c975fdc1d889b7a295808d5e247fe6fb24ee8f4453ab8f84579dbd57"
+  "manifest_identity": "b3:985a31c60c0ba5e6302c38e1d8eb8c3ecacb47a4a59978b0e0ef9474df3bc7a4"
 }

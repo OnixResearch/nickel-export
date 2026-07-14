@@ -3,10 +3,15 @@
   "generator": "nickel-export-core/v2",
   "evaluator": {
     "identity": "nixpkgs:nickel",
+    "artifact_identity": "b3:44110681fb63c5a68c4476d76bc6dbc86ae295e791bdc6125d02e8a4acb02d34",
+    "closure_identity": "",
+    "plan_identity": "b3:04b559b98a996f2d3eb49bb10de1ce5124657dbde408763ab6a1171e994a8a15",
     "version": "nickel-lang-cli-1.17.0",
     "options": [
+      "color=never",
       "contract=examples/service-config/contract.ncl",
-      "format=json"
+      "format=json",
+      "package-cache=private-empty"
     ],
     "import_path_policy": "snapshot_only"
   },
@@ -14,7 +19,7 @@
     {
       "schema": "onix-nickel-export-receipt/v2",
       "family_id": "examples.service-config",
-      "declared_input_identity": "b3:01e99ad0156726a03ccaf279036cd6e09cdb5afd58ddc41525422f515a7134aa",
+      "declared_input_identity": "b3:5aa168afc221aed2f6a5c6df51a836191b50654609c7312c2f05134898036407",
       "source": {
         "path": "examples/service-config/service.ncl",
         "identity": "b3:916fc96fa74363bbc0d0c9e816644cc28077d65f16d883b0348bfe1b392d89d3",
@@ -38,10 +43,15 @@
       },
       "evaluator": {
         "identity": "nixpkgs:nickel",
+        "artifact_identity": "b3:44110681fb63c5a68c4476d76bc6dbc86ae295e791bdc6125d02e8a4acb02d34",
+        "closure_identity": "",
+        "plan_identity": "b3:04b559b98a996f2d3eb49bb10de1ce5124657dbde408763ab6a1171e994a8a15",
         "version": "nickel-lang-cli-1.17.0",
         "options": [
+          "color=never",
           "contract=examples/service-config/contract.ncl",
-          "format=json"
+          "format=json",
+          "package-cache=private-empty"
         ],
         "import_path_policy": "snapshot_only"
       },
@@ -49,5 +59,5 @@
       "non_claim": "Nickel export success proves only exact declared input and output identities under the recorded evaluator descriptor; the declared input identity is not proof of a complete dependency closure or a safe cache key; the receipt does not prove deployability, product-policy conformance, evaluator equivalence, build success, or release eligibility"
     }
   ],
-  "manifest_identity": "b3:b576a9759835d54c3b17701787536f03915e46d713d4f041ede0af715acb2523"
+  "manifest_identity": "b3:d50e9e0615d2ef80881f085639fe9f69b1c7bbab6275b3bb577ac353619f706a"
 }

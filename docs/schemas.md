@@ -12,7 +12,8 @@ encoding of:
 - normalized source path, exact source identity, and byte length;
 - sorted dependency paths, exact identities, and byte lengths;
 - sorted import paths, selector, contract metadata, and output format;
-- normalized evaluator identity, version, sorted options, and
+- normalized evaluator label, exact artifact identity, optional closure identity,
+  typed plan identity, version, sorted non-duplicate options, and
   dependency-observation policy.
 
 Consumer `family_id`, destination, output bytes, diagnostics, and secret opt-in
@@ -44,7 +45,7 @@ A receipt binds:
 - the versioned `declared_input_identity` described above;
 - exact source, dependency, and output bytes with `b3:` BLAKE3 identities and byte lengths;
 - family, selector, contract, format, import paths, and destination;
-- evaluator identity, exact version/package identity, sorted options, and dependency-observation policy;
+- evaluator label, exact artifact BLAKE3 identity, optional adapter-verified closure identity, typed plan identity, version metadata, sorted non-duplicate options, and dependency-observation policy;
 - sorted non-fatal diagnostics and an explicit non-claim.
 
 The core rejects source/output path mismatches, incomplete dependency material, undeclared observed imports, incomplete evaluator-observed closures, error diagnostics, unsafe artifact paths, and conservative secret markers in authored source/dependencies without opt-in.

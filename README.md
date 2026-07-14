@@ -21,12 +21,16 @@ The repository separates a pure core from evaluator and filesystem authority:
 ## Claim boundary
 
 An accepted receipt binds one `declared_input_identity` to exact output bytes
-under a recorded evaluator descriptor. The declared identity excludes the
+under a descriptor containing the resolved evaluator artifact hash and typed
+execution-plan identity. The declared identity excludes the
 consumer label, destination, output, and diagnostics, so equal declared
 identities can expose differing outputs across repeated evaluations.
 
-It does **not** prove evaluator equivalence, deployability, consumer-policy
-conformance, build success, semantic correctness, or release eligibility.
+An executable hash does not prove its dynamic-library closure; adapters may add
+an explicitly classified Nix or Mantle closure identity when they can verify it.
+The receipt does **not** prove evaluator equivalence, deployability,
+consumer-policy conformance, build success, semantic correctness, or release
+eligibility.
 `snapshot_only` means the CLI evaluated the captured declared files in a private
 snapshot with ambient environment variables removed, but did not sandbox every
 possible filesystem read or observe the full import closure. The identity is

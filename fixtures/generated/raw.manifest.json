@@ -3,11 +3,16 @@
   "generator": "nickel-export-core/v2",
   "evaluator": {
     "identity": "nixpkgs:nickel",
+    "artifact_identity": "b3:44110681fb63c5a68c4476d76bc6dbc86ae295e791bdc6125d02e8a4acb02d34",
+    "closure_identity": "",
+    "plan_identity": "b3:2c70360f842054cf98b646a5ac5d54f4249bff2e59c548c3066f6e2760c2c55e",
     "version": "nickel-lang-cli-1.17.0",
     "options": [
+      "color=never",
       "contract=fixtures/contract.ncl",
-      "format=raw",
+      "format=text",
       "import-path=fixtures",
+      "package-cache=private-empty",
       "selector=label"
     ],
     "import_path_policy": "snapshot_only"
@@ -16,7 +21,7 @@
     {
       "schema": "onix-nickel-export-receipt/v2",
       "family_id": "fixtures.raw",
-      "declared_input_identity": "b3:04b9c0de60fa4993bf6a012e72a36460a825138339dcaa34a63964aa4e05549d",
+      "declared_input_identity": "b3:792507575ddb7f27672efffded9b7db4714b02f33d8dd8685e67682057f1a299",
       "source": {
         "path": "fixtures/config.ncl",
         "identity": "b3:9e5b958d59b2e8f9f80ac3579350f5d177909a816061794cf0b248ad45a2cb03",
@@ -42,11 +47,16 @@
       },
       "evaluator": {
         "identity": "nixpkgs:nickel",
+        "artifact_identity": "b3:44110681fb63c5a68c4476d76bc6dbc86ae295e791bdc6125d02e8a4acb02d34",
+        "closure_identity": "",
+        "plan_identity": "b3:2c70360f842054cf98b646a5ac5d54f4249bff2e59c548c3066f6e2760c2c55e",
         "version": "nickel-lang-cli-1.17.0",
         "options": [
+          "color=never",
           "contract=fixtures/contract.ncl",
-          "format=raw",
+          "format=text",
           "import-path=fixtures",
+          "package-cache=private-empty",
           "selector=label"
         ],
         "import_path_policy": "snapshot_only"
@@ -55,5 +65,5 @@
       "non_claim": "Nickel export success proves only exact declared input and output identities under the recorded evaluator descriptor; the declared input identity is not proof of a complete dependency closure or a safe cache key; the receipt does not prove deployability, product-policy conformance, evaluator equivalence, build success, or release eligibility"
     }
   ],
-  "manifest_identity": "b3:2f7b1afefbcd02b855bd2c19059f3cfb4a0742ac729deca6f27c5229357dcdab"
+  "manifest_identity": "b3:1210fea14b3774ced6e13b5fcfaf26de11013fb741748b856cf34d742f3650e8"
 }

@@ -11,8 +11,8 @@ use serde::Serialize;
 
 use nickel_export_core::{
     ArtifactMaterial, EvaluationObservation, EvaluatorDescriptor, ExportFormat, ExportManifest,
-    ExportRequest, ImportPathPolicy, build_manifest, build_receipt, normalize_request,
-    verify_manifest_fresh,
+    ExportRequest, ImportPathPolicy, blake3_identity, build_manifest, build_receipt,
+    normalize_request, verify_manifest_fresh,
 };
 
 /// Stable non-zero process exit used for all fail-closed shell errors.
@@ -79,6 +79,17 @@ struct CliOptions {
     mode: Mode,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct CanonicalEvaluationPlan {
+    source: String,
+    import_paths: Vec<String>,
+    selector: String,
+    contract: String,
+    format: String,
+    color: String,
+    package_cache_policy: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct EvaluationPlan {
     program: PathBuf,
@@ -136,13 +147,21 @@ fn execute(options: &CliOptions) -> Result<(), ShellError> {
     let captured = capture_files(&request, &source_bytes, &dependency_bytes)?;
     let snapshot = materialize_snapshot(&request, &captured)?;
     let evaluator_program = resolve_evaluator_program(&options.evaluator)?;
-    let plan = evaluation_plan(&evaluator_program, &request, &snapshot.root);
+    let canonical_plan = canonical_evaluation_plan(&request);
+    let plan_identity = canonical_plan_identity(&canonical_plan)?;
+    let artifact_identity = evaluator_artifact_identity(&evaluator_program)?;
+    let plan = evaluation_plan(&evaluator_program, &canonical_plan, &snapshot.root);
     verify_evaluator_version(&plan.program, &options.evaluator_version)?;
+    verify_evaluator_artifact(&evaluator_program, &artifact_identity)?;
     let output = run_evaluator(&plan)?;
+    verify_evaluator_artifact(&evaluator_program, &artifact_identity)?;
     let evaluator = EvaluatorDescriptor {
         identity: options.evaluator_identity.clone(),
+        artifact_identity,
+        closure_identity: String::new(),
+        plan_identity,
         version: options.evaluator_version.clone(),
-        options: evaluator_options(&request),
+        options: evaluator_options(&canonical_plan),
         import_path_policy: ImportPathPolicy::SnapshotOnly,
     };
     let dependencies = dependency_bytes
@@ -438,28 +457,51 @@ fn canonical_evaluator_program(program: &Path) -> Result<PathBuf, ShellError> {
     }
 }
 
-fn evaluation_plan(program: &Path, request: &ExportRequest, root: &Path) -> EvaluationPlan {
+// r[impl nickel_export.shell.evaluator_execution_identity]
+fn canonical_evaluation_plan(request: &ExportRequest) -> CanonicalEvaluationPlan {
+    CanonicalEvaluationPlan {
+        source: request.source.clone(),
+        import_paths: request.import_paths.clone(),
+        selector: request.selector.clone(),
+        contract: request.contract.clone(),
+        format: evaluator_format(request.format).to_string(),
+        color: "never".to_string(),
+        package_cache_policy: "private-empty".to_string(),
+    }
+}
+
+fn canonical_plan_identity(plan: &CanonicalEvaluationPlan) -> Result<String, ShellError> {
+    let bytes = serde_json::to_vec(plan)
+        .map_err(|error| ShellError::new("evaluator-plan", error.to_string()))?;
+    Ok(blake3_identity(&bytes))
+}
+
+fn evaluation_plan(
+    program: &Path,
+    canonical: &CanonicalEvaluationPlan,
+    root: &Path,
+) -> EvaluationPlan {
     let mut args = vec![
         OsString::from("export"),
         OsString::from("--color"),
-        OsString::from("never"),
+        OsString::from(&canonical.color),
         OsString::from("--package-cache-dir"),
         root.join(SNAPSHOT_PACKAGE_CACHE).into_os_string(),
         OsString::from("--format"),
-        OsString::from(evaluator_format(request.format)),
-        OsString::from(&request.source),
+        OsString::from(&canonical.format),
+        OsString::from(&canonical.source),
     ];
-    for import_path in &request.import_paths {
+    for import_path in &canonical.import_paths {
         args.push(OsString::from("--import-path"));
         args.push(root.join(import_path).into_os_string());
     }
-    if !request.selector.is_empty() {
+    if !canonical.selector.is_empty() {
         args.push(OsString::from("--field"));
-        args.push(OsString::from(&request.selector));
+        args.push(OsString::from(&canonical.selector));
     }
-    if !request.contract.is_empty() {
+    if !canonical.contract.is_empty() {
         args.push(OsString::from("--apply-contract"));
-        args.push(root.join(&request.contract).into_os_string());
+        args.push(root.join(&canonical.contract).into_os_string());
     }
     EvaluationPlan {
         program: program.to_path_buf(),
@@ -477,21 +519,46 @@ const fn evaluator_format(format: ExportFormat) -> &'static str {
     }
 }
 
-fn evaluator_options(request: &ExportRequest) -> Vec<String> {
-    let mut options = vec![format!("format={}", request.format.as_str())];
+fn evaluator_options(plan: &CanonicalEvaluationPlan) -> Vec<String> {
+    let mut options = vec![
+        format!("color={}", plan.color),
+        format!("format={}", plan.format),
+        format!("package-cache={}", plan.package_cache_policy),
+    ];
     options.extend(
-        request
-            .import_paths
+        plan.import_paths
             .iter()
             .map(|path| format!("import-path={path}")),
     );
-    if !request.selector.is_empty() {
-        options.push(format!("selector={}", request.selector));
+    if !plan.selector.is_empty() {
+        options.push(format!("selector={}", plan.selector));
     }
-    if !request.contract.is_empty() {
-        options.push(format!("contract={}", request.contract));
+    if !plan.contract.is_empty() {
+        options.push(format!("contract={}", plan.contract));
     }
     options
+}
+
+fn evaluator_artifact_identity(program: &Path) -> Result<String, ShellError> {
+    let bytes = fs::read(program).map_err(|error| {
+        ShellError::new(
+            "evaluator-artifact",
+            format!("{}: {error}", program.display()),
+        )
+    })?;
+    Ok(blake3_identity(&bytes))
+}
+
+fn verify_evaluator_artifact(program: &Path, expected: &str) -> Result<(), ShellError> {
+    let actual = evaluator_artifact_identity(program)?;
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(ShellError::new(
+            "evaluator-artifact",
+            format!("{} changed during evaluation", program.display()),
+        ))
+    }
 }
 
 fn verify_evaluator_version(program: &Path, expected: &str) -> Result<(), ShellError> {
@@ -786,12 +853,17 @@ mod tests {
             destination: "generated/value.txt".to_string(),
             allow_secret_material: false,
         };
-        let plan = evaluation_plan(&options.evaluator, &request, Path::new("/tmp/root"));
+        let canonical = canonical_evaluation_plan(&request);
+        let plan = evaluation_plan(&options.evaluator, &canonical, Path::new("/tmp/root"));
         assert_eq!(plan.program, PathBuf::from("nickel"));
         assert!(plan.args.contains(&OsString::from("text")));
         assert!(plan.args.contains(&OsString::from("--apply-contract")));
         assert!(plan.args.contains(&OsString::from("--package-cache-dir")));
         assert!(plan.args.contains(&OsString::from("never")));
+        let identity =
+            canonical_plan_identity(&canonical).unwrap_or_else(|error| panic_for_test(&error));
+        assert!(identity.starts_with("b3:"));
+        assert!(evaluator_options(&canonical).contains(&"format=text".to_string()));
     }
 
     // r[verify nickel_export.shell.captured_input_evaluation]
@@ -855,6 +927,30 @@ mod tests {
     fn evaluator_command_has_no_ambient_environment() {
         let command = evaluator_command(Path::new("/bin/true"));
         assert_eq!(command.get_envs().count(), 0);
+    }
+
+    // r[verify nickel_export.shell.evaluator_execution_identity]
+    #[test]
+    fn evaluator_artifact_change_fails_closed() {
+        let artifact = std::env::temp_dir().join(format!(
+            "nickel-export-evaluator-test-{}",
+            std::process::id()
+        ));
+        let original = b"first evaluator artifact";
+        let changed = b"changed evaluator artifact";
+        fs::write(&artifact, original).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-setup", error.to_string()));
+        });
+        let identity =
+            evaluator_artifact_identity(&artifact).unwrap_or_else(|error| panic_for_test(&error));
+        assert!(verify_evaluator_artifact(&artifact, &identity).is_ok());
+        fs::write(&artifact, changed).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-mutate", error.to_string()));
+        });
+        assert!(verify_evaluator_artifact(&artifact, &identity).is_err());
+        fs::remove_file(&artifact).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-cleanup", error.to_string()));
+        });
     }
 
     #[test]

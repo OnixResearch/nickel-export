@@ -231,8 +231,17 @@ pub struct ArtifactIdentity {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct EvaluatorDescriptor {
-    /// Evaluator implementation or derivation identity.
+    /// Human-readable evaluator implementation or derivation label.
     pub identity: String,
+    /// Exact BLAKE3 identity of the resolved evaluator artifact when available.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub artifact_identity: String,
+    /// Optional adapter-verified Nix, Mantle, or equivalent closure identity.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub closure_identity: String,
+    /// BLAKE3 identity of the canonical typed execution plan when available.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub plan_identity: String,
     /// Exact evaluator version or package identity.
     pub version: String,
     /// Stable evaluator options.
@@ -778,6 +787,9 @@ fn hash_declared_input(input: &ValidatedDeclaredInput) -> String {
     hash_bytes(&mut hasher, input.request.contract.as_bytes());
     hash_bytes(&mut hasher, input.request.format.as_str().as_bytes());
     hash_bytes(&mut hasher, input.evaluator.identity.as_bytes());
+    hash_bytes(&mut hasher, input.evaluator.artifact_identity.as_bytes());
+    hash_bytes(&mut hasher, input.evaluator.closure_identity.as_bytes());
+    hash_bytes(&mut hasher, input.evaluator.plan_identity.as_bytes());
     hash_bytes(&mut hasher, input.evaluator.version.as_bytes());
     hash_count(&mut hasher, input.evaluator.options.len());
     for option in &input.evaluator.options {
@@ -825,12 +837,23 @@ fn validate_evaluator(evaluator: &EvaluatorDescriptor) -> Result<EvaluatorDescri
             "evaluator exceeds the bounded option count",
         ));
     }
-    if !diagnostics.is_empty() {
-        return Err(CoreError::InvalidRequest(diagnostics));
-    }
     let mut normalized = evaluator.clone();
     normalized.options.sort();
-    normalized.options.dedup();
+    if normalized
+        .options
+        .windows(2)
+        .any(|pair| pair.first() == pair.get(1))
+    {
+        diagnostics.push(error(
+            "duplicate-option",
+            "evaluator.options",
+            "evaluator options contain an ambiguous duplicate",
+        ));
+    }
+    if !diagnostics.is_empty() {
+        diagnostics.sort();
+        return Err(CoreError::InvalidRequest(diagnostics));
+    }
     Ok(normalized)
 }
 
@@ -1043,6 +1066,9 @@ mod tests {
     fn evaluator(identity: &str) -> EvaluatorDescriptor {
         EvaluatorDescriptor {
             identity: identity.to_string(),
+            artifact_identity: blake3_identity(identity.as_bytes()),
+            closure_identity: String::new(),
+            plan_identity: blake3_identity(b"test-plan"),
             version: "nickel-1.13.0".to_string(),
             options: vec!["format=json".to_string()],
             import_path_policy: ImportPathPolicy::EvaluatorObservedClosure,
@@ -1167,6 +1193,8 @@ mod tests {
             .unwrap_or_else(panic_for_test);
 
         let mut changed_evaluator = evaluator.clone();
+        changed_evaluator.artifact_identity = blake3_identity(b"alternate-evaluator");
+        changed_evaluator.plan_identity = blake3_identity(b"alternate-plan");
         changed_evaluator.version = "nickel-alternate".to_string();
         changed_evaluator.options.push("alternate=true".to_string());
         let evaluated =
@@ -1212,6 +1240,15 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_evaluator_options_fail_closed() {
+        let request = request("generated/config.json");
+        let mut evaluator = evaluator("nickel-cli");
+        evaluator.options.push("format=json".to_string());
+        let result = declared_identity_for(&request, SOURCE, DEPENDENCY, &evaluator);
+        assert!(matches!(result, Err(CoreError::InvalidRequest(_))));
+    }
+
+    #[test]
     fn normalizes_dependency_order_before_identity() {
         let mut request = request("generated/config.json");
         request.dependencies = vec![
@@ -1240,6 +1277,9 @@ mod tests {
         ];
         let evaluator = EvaluatorDescriptor {
             identity: "mantle-embedded-crunch-eval".to_string(),
+            artifact_identity: blake3_identity(b"mantle-embedded-crunch-eval"),
+            closure_identity: "mantle:fixture-closure".to_string(),
+            plan_identity: blake3_identity(b"mantle-fixture-plan"),
             version: "mantle-evaluator-fixture-v1".to_string(),
             options: vec!["deterministic=true".to_string()],
             import_path_policy: ImportPathPolicy::EvaluatorObservedClosure,
