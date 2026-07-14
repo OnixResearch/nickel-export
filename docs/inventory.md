@@ -12,6 +12,6 @@ Inventory baseline: 2026-07-13.
 
 ## Extraction conclusion
 
-The shared layer is request shape, exact artifact identity, evaluator descriptors, structured diagnostics, deterministic receipts/manifests, freshness comparison, conservative secret handling, and compatibility projections.
+The shared layer is request shape, exact artifact identity, a versioned declared-input fingerprint, evaluator descriptors, structured diagnostics, deterministic receipts/manifests, freshness comparison, conservative secret handling, and compatibility projections.
 
 The shared layer explicitly excludes Nickel evaluator semantics, import resolution authority, filesystem roots, output destination authority, consumer contracts and policy meaning, build authority, lifecycle gates, proof claims, and release eligibility.

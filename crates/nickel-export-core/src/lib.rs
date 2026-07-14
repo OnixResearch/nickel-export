@@ -17,10 +17,12 @@ use serde::{Deserialize, Serialize};
 
 /// Canonical request schema.
 pub const REQUEST_SCHEMA: &str = "onix-nickel-export-request/v1";
+/// Canonical declared-input identity schema.
+pub const DECLARED_INPUT_SCHEMA: &str = "onix-nickel-export-declared-input/v1";
 /// Canonical receipt schema.
-pub const RECEIPT_SCHEMA: &str = "onix-nickel-export-receipt/v1";
+pub const RECEIPT_SCHEMA: &str = "onix-nickel-export-receipt/v2";
 /// Canonical manifest schema.
-pub const MANIFEST_SCHEMA: &str = "onix-nickel-export-manifest/v1";
+pub const MANIFEST_SCHEMA: &str = "onix-nickel-export-manifest/v2";
 /// Canonical diagnostic schema.
 pub const DIAGNOSTIC_SCHEMA: &str = "onix-nickel-export-diagnostic/v1";
 /// Octet compatibility manifest schema.
@@ -28,15 +30,15 @@ pub const OCTET_MANIFEST_SCHEMA: &str = "octet-nickel-export-manifest/v1";
 /// Mantle compatibility receipt schema.
 pub const MANTLE_RECEIPT_SCHEMA: &str = "mantle-nickel-export-receipt-v1";
 /// Project generator identity.
-pub const GENERATOR_ID: &str = "nickel-export-core/v1";
+pub const GENERATOR_ID: &str = "nickel-export-core/v2";
 /// Generator identity retained by the Octet v1 projection.
 pub const OCTET_GENERATOR_ID: &str = "octet-standards.nickel-export-helper/v1";
 /// Non-claim retained by the Mantle v1 projection.
 pub const MANTLE_NON_CLAIM: &str = "Nickel export success proves only the declared evaluation output digest under the recorded evaluator descriptor; it does not prove deployability, frontend correctness, or build success";
 /// Bound on user-provided lists before allocation-heavy processing.
 pub const MAX_ARTIFACTS: usize = 4_096;
-/// Non-claim carried by canonical and compatibility receipts.
-pub const NON_CLAIM: &str = "Nickel export success proves only exact declared input and output identities under the recorded evaluator descriptor; it does not prove deployability, product-policy conformance, evaluator equivalence, build success, or release eligibility";
+/// Non-claim carried by canonical receipts.
+pub const NON_CLAIM: &str = "Nickel export success proves only exact declared input and output identities under the recorded evaluator descriptor; the declared input identity is not proof of a complete dependency closure or a safe cache key; the receipt does not prove deployability, product-policy conformance, evaluator equivalence, build success, or release eligibility";
 
 const BLAKE3_PREFIX: &str = "b3:";
 const HEX_RADIX: u8 = 16;
@@ -99,6 +101,17 @@ pub enum ImportPathPolicy {
     DeclaredOnly,
     /// The evaluator reported the complete observed dependency closure.
     EvaluatorObservedClosure,
+}
+
+impl ImportPathPolicy {
+    /// Return the canonical identity spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DeclaredOnly => "declared_only",
+            Self::EvaluatorObservedClosure => "evaluator_observed_closure",
+        }
+    }
 }
 
 /// Severity of one structured evaluator or contract diagnostic.
@@ -187,6 +200,18 @@ pub struct ArtifactMaterial<'a> {
     pub bytes: &'a [u8],
 }
 
+/// Exact declared material available before evaluation.
+pub struct DeclaredInputMaterial<'a> {
+    /// Validated export request.
+    pub request: &'a ExportRequest,
+    /// Exact root source bytes.
+    pub source: ArtifactMaterial<'a>,
+    /// Exact declared dependency bytes.
+    pub dependencies: Vec<ArtifactMaterial<'a>>,
+    /// Evaluator descriptor.
+    pub evaluator: &'a EvaluatorDescriptor,
+}
+
 /// Exact-byte identity for one artifact.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
@@ -240,6 +265,8 @@ pub struct ExportReceipt {
     pub schema: String,
     /// Consumer-defined family identifier.
     pub family_id: String,
+    /// BLAKE3 identity of the canonical declared evaluation inputs.
+    pub declared_input_identity: String,
     /// Root source identity.
     pub source: ArtifactIdentity,
     /// Sorted dependency identities.
@@ -394,6 +421,32 @@ pub fn normalize_request(request: &ExportRequest) -> Result<ExportRequest, CoreE
     })
 }
 
+struct ValidatedDeclaredInput {
+    request: ExportRequest,
+    source: ArtifactIdentity,
+    dependencies: Vec<ArtifactIdentity>,
+    evaluator: EvaluatorDescriptor,
+}
+
+/// Build the versioned BLAKE3 identity of exact declared evaluation inputs.
+///
+/// The identity deliberately excludes consumer labels, output destinations,
+/// output bytes, and diagnostics. Under [`ImportPathPolicy::DeclaredOnly`] it
+/// is a fingerprint of declared material, not proof of complete closure and
+/// not a safe cache key.
+///
+/// # Errors
+///
+/// Fails closed for malformed requests, mismatched source or dependency paths,
+/// and invalid evaluator descriptors.
+// r[impl nickel_export.core.declared_input_identity]
+pub fn build_declared_input_identity(
+    input: &DeclaredInputMaterial<'_>,
+) -> Result<String, CoreError> {
+    let validated = validate_declared_input(input)?;
+    Ok(hash_declared_input(&validated))
+}
+
 /// Build an accepted receipt from exact post-evaluation material.
 ///
 /// # Errors
@@ -403,47 +456,23 @@ pub fn normalize_request(request: &ExportRequest) -> Result<ExportRequest, CoreE
 // r[impl nickel_export.core.identity]
 // r[impl nickel_export.core.fail_closed]
 pub fn build_receipt(observation: &EvaluationObservation<'_>) -> Result<ExportReceipt, CoreError> {
-    let request = normalize_request(observation.request)?;
-    let mut mismatches = Vec::new();
-    if observation.source.path != request.source {
-        mismatches.push(error(
-            "source-path-mismatch",
-            observation.source.path,
-            "source material path differs from request",
-        ));
-    }
-    if observation.output.path != request.destination {
-        mismatches.push(error(
+    let declared_input = DeclaredInputMaterial {
+        request: observation.request,
+        source: observation.source.clone(),
+        dependencies: observation.dependencies.clone(),
+        evaluator: observation.evaluator,
+    };
+    let validated = validate_declared_input(&declared_input)?;
+    if observation.output.path != validated.request.destination {
+        return Err(CoreError::MaterialMismatch(vec![error(
             "output-path-mismatch",
             observation.output.path,
             "output material path differs from request",
-        ));
-    }
-    let mut dependencies = observation
-        .dependencies
-        .iter()
-        .map(artifact_identity)
-        .collect::<Vec<_>>();
-    dependencies.sort();
-    let actual_paths = dependencies
-        .iter()
-        .map(|artifact| artifact.path.clone())
-        .collect::<Vec<_>>();
-    if actual_paths != request.dependencies {
-        mismatches.push(error(
-            "dependency-set-mismatch",
-            &request.source,
-            "dependency material paths differ from the request",
-        ));
-    }
-    if !mismatches.is_empty() {
-        mismatches.sort();
-        return Err(CoreError::MaterialMismatch(mismatches));
+        )]));
     }
 
-    let evaluator = validate_evaluator(observation.evaluator)?;
-    reject_secret_material(&request, observation)?;
-    validate_dependency_closure(&request, observation)?;
+    reject_secret_material(&validated.request, observation)?;
+    validate_dependency_closure(&validated.request, observation)?;
     let mut diagnostics = observation.diagnostics.clone();
     diagnostics.sort();
     if diagnostics
@@ -452,18 +481,20 @@ pub fn build_receipt(observation: &EvaluationObservation<'_>) -> Result<ExportRe
     {
         return Err(CoreError::EvaluationFailed(diagnostics));
     }
+    let declared_input_identity = hash_declared_input(&validated);
 
     Ok(ExportReceipt {
         schema: RECEIPT_SCHEMA.to_string(),
-        family_id: request.family_id,
-        source: artifact_identity(&observation.source),
-        dependencies,
-        import_paths: request.import_paths,
-        selector: request.selector,
-        contract: request.contract,
-        format: request.format,
+        family_id: validated.request.family_id,
+        declared_input_identity,
+        source: validated.source,
+        dependencies: validated.dependencies,
+        import_paths: validated.request.import_paths,
+        selector: validated.request.selector,
+        contract: validated.request.contract,
+        format: validated.request.format,
         output: artifact_identity(&observation.output),
-        evaluator,
+        evaluator: validated.evaluator,
         diagnostics,
         non_claim: NON_CLAIM.to_string(),
     })
@@ -669,7 +700,10 @@ pub fn project_mantle_receipt(receipt: &ExportReceipt) -> MantleReceipt {
 /// Return a BLAKE3 identity for exact bytes.
 #[must_use]
 pub fn blake3_identity(bytes: &[u8]) -> String {
-    let digest = blake3::hash(bytes);
+    format_blake3_identity(&blake3::hash(bytes))
+}
+
+fn format_blake3_identity(digest: &blake3::Hash) -> String {
     let mut output =
         String::with_capacity(BLAKE3_PREFIX.len() + digest.as_bytes().len() * HEX_DIGITS_PER_BYTE);
     output.push_str(BLAKE3_PREFIX);
@@ -680,6 +714,93 @@ pub fn blake3_identity(bytes: &[u8]) -> String {
         ));
     }
     output
+}
+
+fn validate_declared_input(
+    input: &DeclaredInputMaterial<'_>,
+) -> Result<ValidatedDeclaredInput, CoreError> {
+    let request = normalize_request(input.request)?;
+    let mut mismatches = Vec::new();
+    if input.source.path != request.source {
+        mismatches.push(error(
+            "source-path-mismatch",
+            input.source.path,
+            "source material path differs from request",
+        ));
+    }
+    let source = artifact_identity(&input.source);
+    let mut dependencies = input
+        .dependencies
+        .iter()
+        .map(artifact_identity)
+        .collect::<Vec<_>>();
+    dependencies.sort();
+    let actual_paths = dependencies
+        .iter()
+        .map(|artifact| artifact.path.clone())
+        .collect::<Vec<_>>();
+    if actual_paths != request.dependencies {
+        mismatches.push(error(
+            "dependency-set-mismatch",
+            &request.source,
+            "dependency material paths differ from the request",
+        ));
+    }
+    if !mismatches.is_empty() {
+        mismatches.sort();
+        return Err(CoreError::MaterialMismatch(mismatches));
+    }
+    let evaluator = validate_evaluator(input.evaluator)?;
+    Ok(ValidatedDeclaredInput {
+        request,
+        source,
+        dependencies,
+        evaluator,
+    })
+}
+
+fn hash_declared_input(input: &ValidatedDeclaredInput) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hash_bytes(&mut hasher, DECLARED_INPUT_SCHEMA.as_bytes());
+    hash_artifact_identity(&mut hasher, &input.source);
+    hash_count(&mut hasher, input.dependencies.len());
+    for dependency in &input.dependencies {
+        hash_artifact_identity(&mut hasher, dependency);
+    }
+    hash_count(&mut hasher, input.request.import_paths.len());
+    for import_path in &input.request.import_paths {
+        hash_bytes(&mut hasher, import_path.as_bytes());
+    }
+    hash_bytes(&mut hasher, input.request.selector.as_bytes());
+    hash_bytes(&mut hasher, input.request.contract.as_bytes());
+    hash_bytes(&mut hasher, input.request.format.as_str().as_bytes());
+    hash_bytes(&mut hasher, input.evaluator.identity.as_bytes());
+    hash_bytes(&mut hasher, input.evaluator.version.as_bytes());
+    hash_count(&mut hasher, input.evaluator.options.len());
+    for option in &input.evaluator.options {
+        hash_bytes(&mut hasher, option.as_bytes());
+    }
+    hash_bytes(
+        &mut hasher,
+        input.evaluator.import_path_policy.as_str().as_bytes(),
+    );
+    format_blake3_identity(&hasher.finalize())
+}
+
+fn hash_artifact_identity(hasher: &mut blake3::Hasher, artifact: &ArtifactIdentity) {
+    hash_bytes(hasher, artifact.path.as_bytes());
+    hash_bytes(hasher, artifact.identity.as_bytes());
+    hasher.update(&artifact.bytes.to_be_bytes());
+}
+
+fn hash_count(hasher: &mut blake3::Hasher, count: usize) {
+    let bounded = u64::try_from(count).unwrap_or(u64::MAX);
+    hasher.update(&bounded.to_be_bytes());
+}
+
+fn hash_bytes(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hash_count(hasher, bytes.len());
+    hasher.update(bytes);
 }
 
 fn artifact_identity(material: &ArtifactMaterial<'_>) -> ArtifactIdentity {
@@ -922,6 +1043,26 @@ mod tests {
         }
     }
 
+    fn declared_identity_for(
+        request: &ExportRequest,
+        source: &[u8],
+        dependency: &[u8],
+        evaluator: &EvaluatorDescriptor,
+    ) -> Result<String, CoreError> {
+        build_declared_input_identity(&DeclaredInputMaterial {
+            request,
+            source: ArtifactMaterial {
+                path: "config/source.ncl",
+                bytes: source,
+            },
+            dependencies: vec![ArtifactMaterial {
+                path: "config/dependency.ncl",
+                bytes: dependency,
+            }],
+            evaluator,
+        })
+    }
+
     fn receipt_for(destination: &str, evaluator: &EvaluatorDescriptor) -> ExportReceipt {
         let request = request(destination);
         let observation = EvaluationObservation {
@@ -961,8 +1102,107 @@ mod tests {
         let second = build_manifest(core::slice::from_ref(&receipt));
         assert_eq!(first, second);
         let manifest = first.unwrap_or_else(panic_for_test);
+        assert_eq!(receipt.schema, RECEIPT_SCHEMA);
+        assert!(receipt.declared_input_identity.starts_with(BLAKE3_PREFIX));
         assert!(manifest.manifest_identity.starts_with(BLAKE3_PREFIX));
         assert_eq!(verify_manifest_fresh(&manifest, &manifest), Ok(()));
+    }
+
+    // r[verify nickel_export.core.declared_input_identity]
+    #[test]
+    fn declared_input_identity_excludes_consumer_labels_destinations_and_output_bytes() {
+        let evaluator = evaluator("nickel-cli");
+        let baseline_request = request("generated/config.json");
+        let baseline = declared_identity_for(&baseline_request, SOURCE, DEPENDENCY, &evaluator)
+            .unwrap_or_else(panic_for_test);
+        let repeated = declared_identity_for(&baseline_request, SOURCE, DEPENDENCY, &evaluator)
+            .unwrap_or_else(panic_for_test);
+        let mut relocated_request = request("generated/relocated.json");
+        relocated_request.family_id = "tests.relocated".to_string();
+        let relocated = declared_identity_for(&relocated_request, SOURCE, DEPENDENCY, &evaluator)
+            .unwrap_or_else(panic_for_test);
+        let output_changed = custom_receipt(SOURCE, DEPENDENCY, b"{\"value\":\"alternate\"}\n");
+
+        assert_eq!(baseline, repeated);
+        assert_eq!(baseline, relocated);
+        assert_eq!(baseline, output_changed.declared_input_identity);
+    }
+
+    #[test]
+    fn declared_input_identity_changes_with_semantic_inputs_and_policy() {
+        let evaluator = evaluator("nickel-cli");
+        let baseline_request = request("generated/config.json");
+        let baseline = declared_identity_for(&baseline_request, SOURCE, DEPENDENCY, &evaluator)
+            .unwrap_or_else(panic_for_test);
+
+        let mut selected_request = baseline_request.clone();
+        selected_request.selector = "alternate".to_string();
+        let selected = declared_identity_for(&selected_request, SOURCE, DEPENDENCY, &evaluator)
+            .unwrap_or_else(panic_for_test);
+
+        let mut formatted_request = baseline_request.clone();
+        formatted_request.format = ExportFormat::Yaml;
+        let formatted = declared_identity_for(&formatted_request, SOURCE, DEPENDENCY, &evaluator)
+            .unwrap_or_else(panic_for_test);
+
+        let mut contracted_request = baseline_request.clone();
+        contracted_request.contract = "AlternateContract".to_string();
+        let contracted = declared_identity_for(&contracted_request, SOURCE, DEPENDENCY, &evaluator)
+            .unwrap_or_else(panic_for_test);
+
+        let mut imported_request = baseline_request.clone();
+        imported_request.import_paths.push("vendor".to_string());
+        let imported = declared_identity_for(&imported_request, SOURCE, DEPENDENCY, &evaluator)
+            .unwrap_or_else(panic_for_test);
+
+        let mut admission_request = baseline_request.clone();
+        admission_request.allow_secret_material = true;
+        let admission = declared_identity_for(&admission_request, SOURCE, DEPENDENCY, &evaluator)
+            .unwrap_or_else(panic_for_test);
+
+        let mut changed_evaluator = evaluator.clone();
+        changed_evaluator.version = "nickel-alternate".to_string();
+        changed_evaluator.options.push("alternate=true".to_string());
+        let evaluated =
+            declared_identity_for(&baseline_request, SOURCE, DEPENDENCY, &changed_evaluator)
+                .unwrap_or_else(panic_for_test);
+
+        let mut declared_only_evaluator = evaluator;
+        declared_only_evaluator.import_path_policy = ImportPathPolicy::DeclaredOnly;
+        let declared_only = declared_identity_for(
+            &baseline_request,
+            SOURCE,
+            DEPENDENCY,
+            &declared_only_evaluator,
+        )
+        .unwrap_or_else(panic_for_test);
+
+        assert_ne!(baseline, selected);
+        assert_ne!(baseline, formatted);
+        assert_ne!(baseline, contracted);
+        assert_ne!(baseline, imported);
+        assert_eq!(baseline, admission);
+        assert_ne!(baseline, evaluated);
+        assert_ne!(baseline, declared_only);
+    }
+
+    #[test]
+    fn declared_input_identity_rejects_mismatched_material() {
+        let evaluator = evaluator("nickel-cli");
+        let request = request("generated/config.json");
+        let result = build_declared_input_identity(&DeclaredInputMaterial {
+            request: &request,
+            source: ArtifactMaterial {
+                path: "config/other.ncl",
+                bytes: SOURCE,
+            },
+            dependencies: vec![ArtifactMaterial {
+                path: "config/dependency.ncl",
+                bytes: DEPENDENCY,
+            }],
+            evaluator: &evaluator,
+        });
+        assert!(matches!(result, Err(CoreError::MaterialMismatch(_))));
     }
 
     #[test]
@@ -1181,6 +1421,18 @@ mod tests {
         assert_ne!(baseline.source.identity, source_changed.source.identity);
         assert_ne!(baseline.dependencies, dependency_changed.dependencies);
         assert_ne!(baseline.output.identity, output_changed.output.identity);
+        assert_ne!(
+            baseline.declared_input_identity,
+            source_changed.declared_input_identity
+        );
+        assert_ne!(
+            baseline.declared_input_identity,
+            dependency_changed.declared_input_identity
+        );
+        assert_eq!(
+            baseline.declared_input_identity,
+            output_changed.declared_input_identity
+        );
     }
 
     #[test]

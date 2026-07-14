@@ -9,7 +9,8 @@
   "non_claims": [
     "No Nickel evaluation occurs in nickel-export-core.",
     "A receipt does not prove evaluator equivalence, deployability, build success, product-policy conformance, or release eligibility.",
-    "Declared-only external evaluator receipts do not claim an evaluator-observed dependency closure."
+    "Declared-only external evaluator receipts do not claim an evaluator-observed dependency closure.",
+    "A declared input identity is not a safe cache key."
   ],
   "packages": [
     "nickel-export-core",
@@ -29,9 +30,10 @@
   "repository": "https://github.com/OnixResearch/nickel-export",
   "schemas": [
     "onix-nickel-export-request/v1",
+    "onix-nickel-export-declared-input/v1",
     "onix-nickel-export-diagnostic/v1",
     "onix-nickel-export-shell-error/v1",
-    "onix-nickel-export-receipt/v1",
-    "onix-nickel-export-manifest/v1"
+    "onix-nickel-export-receipt/v2",
+    "onix-nickel-export-manifest/v2"
   ]
 }

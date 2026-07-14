@@ -18,6 +18,14 @@ For each consumer family:
 6. Switch the canonical standalone result to the primary path while retaining the legacy projection and a rollback feature or adapter.
 7. Remove duplicated local core logic only after downstream checked manifests, receipts, Nix checks, and Cairn gates all pass.
 
+## Canonical v2 identity boundary
+
+Canonical receipt and manifest v2 add `declared_input_identity`. Consumers may
+use it to correlate repeated evaluations or detect differing outputs for the
+same declared inputs. They must not use a `declared_only` identity as a trusted
+cache key. Octet and Mantle v1 projections remain unchanged and intentionally
+do not gain stronger closure or caching claims.
+
 ## Consumer-specific ownership
 
 - Octet retains candidate-family admission, evidence roles, checked destinations, and release gates.

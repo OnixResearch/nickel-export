@@ -6,10 +6,11 @@ let Contracts = import "contracts.ncl" in
   packages = ["nickel-export-core", "nickel-export"],
   schemas = [
     "onix-nickel-export-request/v1",
+    "onix-nickel-export-declared-input/v1",
     "onix-nickel-export-diagnostic/v1",
     "onix-nickel-export-shell-error/v1",
-    "onix-nickel-export-receipt/v1",
-    "onix-nickel-export-manifest/v1",
+    "onix-nickel-export-receipt/v2",
+    "onix-nickel-export-manifest/v2",
   ],
   evaluator = {
     identity = "nixpkgs:nickel",
@@ -31,5 +32,6 @@ let Contracts = import "contracts.ncl" in
     "No Nickel evaluation occurs in nickel-export-core.",
     "A receipt does not prove evaluator equivalence, deployability, build success, product-policy conformance, or release eligibility.",
     "Declared-only external evaluator receipts do not claim an evaluator-observed dependency closure.",
+    "A declared input identity is not a safe cache key.",
   ],
 } | Contracts.RepositoryContract

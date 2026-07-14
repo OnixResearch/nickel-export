@@ -86,12 +86,23 @@ relationship it records:
 ```text
 exact service.ncl bytes
 + exact contract.ncl bytes
++ export options
 + recorded Nickel evaluator
-= exact service.json bytes
+= declared_input_identity
+
+then the receipt binds:
+declared_input_identity -> exact service.json bytes
 ```
 
+The declared identity does not include the output or its destination. Two runs
+with the same declared identity but different output identities are therefore
+a useful warning about hidden inputs or nondeterministic evaluation. Under the
+CLI's `declared_only` policy it is not a safe cache key because Nickel did not
+report its complete observed import closure.
+
 The manifest does not claim that the service is correct or safe. It only binds
-those exact inputs and output under the recorded evaluator description.
+those exact declared inputs and output under the recorded evaluator
+description.
 
 ### 4. Check freshness in CI
 

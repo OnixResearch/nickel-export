@@ -1,6 +1,6 @@
 # nickel-export
 
-`nickel-export` is the independent, evaluator-neutral boundary for deterministic Nickel export requests, exact-byte identities, diagnostics, receipts, and freshness manifests.
+`nickel-export` is the independent, evaluator-neutral boundary for deterministic Nickel export requests, declared-input fingerprints, exact-byte identities, diagnostics, receipts, and freshness manifests.
 
 ## Start here
 
@@ -20,9 +20,18 @@ The repository separates a pure core from evaluator and filesystem authority:
 
 ## Claim boundary
 
-An accepted receipt proves exact declared input and output identities under one recorded evaluator descriptor. It does **not** prove evaluator equivalence, deployability, consumer-policy conformance, build success, semantic correctness, or release eligibility.
+An accepted receipt binds one `declared_input_identity` to exact output bytes
+under a recorded evaluator descriptor. The declared identity excludes the
+consumer label, destination, output, and diagnostics, so equal declared
+identities can expose differing outputs across repeated evaluations.
 
-`declared_only` means the external evaluator did not report its observed import closure. Consumers requiring an evaluator-observed closure must use an adapter that supplies `EvaluatorObservedClosure` evidence to the core. Receipts never conceal this distinction.
+It does **not** prove evaluator equivalence, deployability, consumer-policy
+conformance, build success, semantic correctness, or release eligibility.
+`declared_only` means the external evaluator did not report its observed import
+closure, so that identity is not a safe cache key. Consumers requiring an
+evaluator-observed closure must use an adapter that supplies
+`EvaluatorObservedClosure` evidence to the core. Receipts never conceal this
+distinction.
 
 ## Usage
 
