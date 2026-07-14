@@ -9,8 +9,10 @@ let Contracts = import "contracts.ncl" in
     "onix-nickel-export-declared-input/v1",
     "onix-nickel-export-diagnostic/v1",
     "onix-nickel-export-shell-error/v1",
-    "onix-nickel-export-receipt/v2",
-    "onix-nickel-export-manifest/v2",
+    "onix-nickel-export-receipt-identity/v1",
+    "onix-nickel-export-manifest-identity/v1",
+    "onix-nickel-export-receipt/v3",
+    "onix-nickel-export-manifest/v3",
   ],
   evaluator = {
     identity = "nixpkgs:nickel",

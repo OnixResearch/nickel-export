@@ -57,7 +57,9 @@ Use `--write` to update the destination and manifest. Exactly one of `--write` a
 
 ## Schemas and compatibility
 
-Canonical schemas are documented in [docs/schemas.md](docs/schemas.md), and the
+Canonical schemas are documented in [docs/schemas.md](docs/schemas.md). Receipt
+and manifest identities use versioned schema-owned length-delimited bytes;
+pretty JSON is only the reviewable wire form. The
 [worked examples](docs/examples.md) show how those schemas fit into a concrete
 workflow. Serialization is feature-gated in the core; `--no-default-features`
 keeps the core evaluator-neutral and `no_std`.

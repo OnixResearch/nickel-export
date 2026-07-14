@@ -21,10 +21,14 @@ use serde::{Deserialize, Serialize};
 pub const REQUEST_SCHEMA: &str = "onix-nickel-export-request/v1";
 /// Canonical declared-input identity schema.
 pub const DECLARED_INPUT_SCHEMA: &str = "onix-nickel-export-declared-input/v1";
+/// Canonical receipt identity encoding schema.
+pub const RECEIPT_IDENTITY_SCHEMA: &str = "onix-nickel-export-receipt-identity/v1";
+/// Canonical manifest identity encoding schema.
+pub const MANIFEST_IDENTITY_SCHEMA: &str = "onix-nickel-export-manifest-identity/v1";
 /// Canonical receipt schema.
-pub const RECEIPT_SCHEMA: &str = "onix-nickel-export-receipt/v2";
+pub const RECEIPT_SCHEMA: &str = "onix-nickel-export-receipt/v3";
 /// Canonical manifest schema.
-pub const MANIFEST_SCHEMA: &str = "onix-nickel-export-manifest/v2";
+pub const MANIFEST_SCHEMA: &str = "onix-nickel-export-manifest/v3";
 /// Canonical diagnostic schema.
 pub const DIAGNOSTIC_SCHEMA: &str = "onix-nickel-export-diagnostic/v1";
 /// Octet compatibility manifest schema.
@@ -32,7 +36,7 @@ pub const OCTET_MANIFEST_SCHEMA: &str = "octet-nickel-export-manifest/v1";
 /// Mantle compatibility receipt schema.
 pub const MANTLE_RECEIPT_SCHEMA: &str = "mantle-nickel-export-receipt-v1";
 /// Project generator identity.
-pub const GENERATOR_ID: &str = "nickel-export-core/v2";
+pub const GENERATOR_ID: &str = "nickel-export-core/v3";
 /// Generator identity retained by the Octet v1 projection.
 pub const OCTET_GENERATOR_ID: &str = "octet-standards.nickel-export-helper/v1";
 /// Non-claim retained by the Mantle v1 projection.
@@ -351,6 +355,8 @@ pub struct ExportReceipt {
     pub schema: String,
     /// Consumer-defined family identifier.
     pub family_id: String,
+    /// BLAKE3 identity of the canonical receipt bytes.
+    pub receipt_identity: String,
     /// BLAKE3 identity of the canonical declared evaluation inputs.
     pub declared_input_identity: String,
     /// Root source identity.
@@ -635,9 +641,10 @@ pub fn build_receipt(
     }
     let declared_input_identity = hash_declared_input(&validated)?;
 
-    Ok(AdmittedReceipt(ExportReceipt {
+    let mut wire = ExportReceipt {
         schema: RECEIPT_SCHEMA.to_string(),
         family_id: validated.request.family_id,
+        receipt_identity: String::new(),
         declared_input_identity,
         source: validated.source,
         dependencies: validated.dependencies,
@@ -649,7 +656,9 @@ pub fn build_receipt(
         evaluator: validated.evaluator,
         diagnostics,
         non_claim: NON_CLAIM.to_string(),
-    }))
+    };
+    wire.receipt_identity = blake3_identity(&encode_receipt_wire(&wire)?);
+    Ok(AdmittedReceipt(wire))
 }
 
 /// Admit a deserialized receipt after recomputing every structural invariant.
@@ -670,6 +679,7 @@ pub fn admit_receipt(wire: ExportReceipt) -> Result<AdmittedReceipt, CoreError> 
             "receipt non-claim differs",
         ));
     }
+    validate_identity(&wire.receipt_identity, "receipt_identity")?;
     validate_identity(&wire.declared_input_identity, "declared_input_identity")?;
     validate_artifact_wire(&wire.source)?;
     for dependency in &wire.dependencies {
@@ -723,6 +733,12 @@ pub fn admit_receipt(wire: ExportReceipt) -> Result<AdmittedReceipt, CoreError> 
         return Err(invalid_wire(
             "receipt.declared_input_identity",
             "declared input identity does not match receipt fields",
+        ));
+    }
+    if blake3_identity(&encode_receipt_wire(&wire)?) != wire.receipt_identity {
+        return Err(invalid_wire(
+            "receipt.receipt_identity",
+            "receipt identity does not match canonical fields",
         ));
     }
     Ok(AdmittedReceipt(wire))
@@ -828,28 +844,131 @@ pub fn verify_manifest_fresh(
     }
 }
 
+/// Return schema-owned canonical bytes for one admitted receipt identity.
+///
+/// # Errors
+///
+/// Returns [`CoreError::SizeOverflow`] when a field length cannot be encoded.
+// r[impl nickel_export.core.canonical_evidence_encoding]
+pub fn encode_receipt_identity(receipt: &AdmittedReceipt) -> Result<Vec<u8>, CoreError> {
+    encode_receipt_wire(receipt.as_wire())
+}
+
+/// Return schema-owned canonical bytes for one verified manifest identity.
+///
+/// # Errors
+///
+/// Returns [`CoreError::SizeOverflow`] when a field length cannot be encoded.
+pub fn encode_manifest_identity(manifest: &VerifiedManifest) -> Result<Vec<u8>, CoreError> {
+    encode_manifest_wire(&manifest.evaluator, &manifest.exports)
+}
+
 #[cfg(feature = "serde")]
 fn manifest_payload_identity(
     evaluator: &EvaluatorDescriptor,
     exports: &[ExportReceipt],
 ) -> Result<String, CoreError> {
-    let payload = ManifestPayload {
-        schema: MANIFEST_SCHEMA,
-        generator: GENERATOR_ID,
-        evaluator,
-        exports,
-    };
-    let bytes = serde_json::to_vec(&payload).map_err(|_| CoreError::Serialization)?;
-    Ok(blake3_identity(&bytes))
+    Ok(blake3_identity(&encode_manifest_wire(evaluator, exports)?))
 }
 
-#[cfg(feature = "serde")]
-#[derive(Serialize)]
-struct ManifestPayload<'a> {
-    schema: &'static str,
-    generator: &'static str,
-    evaluator: &'a EvaluatorDescriptor,
-    exports: &'a [ExportReceipt],
+fn encode_receipt_wire(receipt: &ExportReceipt) -> Result<Vec<u8>, CoreError> {
+    let mut output = Vec::new();
+    append_bytes(&mut output, RECEIPT_IDENTITY_SCHEMA.as_bytes())?;
+    append_bytes(&mut output, receipt.schema.as_bytes())?;
+    append_bytes(&mut output, receipt.family_id.as_bytes())?;
+    append_bytes(&mut output, receipt.declared_input_identity.as_bytes())?;
+    append_artifact(&mut output, &receipt.source)?;
+    append_count(&mut output, receipt.dependencies.len())?;
+    for dependency in &receipt.dependencies {
+        append_artifact(&mut output, dependency)?;
+    }
+    append_count(&mut output, receipt.import_paths.len())?;
+    for import_path in &receipt.import_paths {
+        append_bytes(&mut output, import_path.as_bytes())?;
+    }
+    append_bytes(&mut output, receipt.selector.as_bytes())?;
+    append_bytes(&mut output, receipt.contract.as_bytes())?;
+    append_bytes(&mut output, receipt.format.as_str().as_bytes())?;
+    append_artifact(&mut output, &receipt.output)?;
+    append_evaluator(&mut output, &receipt.evaluator)?;
+    append_count(&mut output, receipt.diagnostics.len())?;
+    for diagnostic in &receipt.diagnostics {
+        append_diagnostic(&mut output, diagnostic)?;
+    }
+    append_bytes(&mut output, receipt.non_claim.as_bytes())?;
+    Ok(output)
+}
+
+fn encode_manifest_wire(
+    evaluator: &EvaluatorDescriptor,
+    exports: &[ExportReceipt],
+) -> Result<Vec<u8>, CoreError> {
+    let mut output = Vec::new();
+    append_bytes(&mut output, MANIFEST_IDENTITY_SCHEMA.as_bytes())?;
+    append_bytes(&mut output, MANIFEST_SCHEMA.as_bytes())?;
+    append_bytes(&mut output, GENERATOR_ID.as_bytes())?;
+    append_evaluator(&mut output, evaluator)?;
+    append_count(&mut output, exports.len())?;
+    for receipt in exports {
+        let receipt_bytes = encode_receipt_wire(receipt)?;
+        append_bytes(&mut output, &receipt_bytes)?;
+        append_bytes(&mut output, receipt.receipt_identity.as_bytes())?;
+    }
+    Ok(output)
+}
+
+fn append_artifact(output: &mut Vec<u8>, artifact: &ArtifactIdentity) -> Result<(), CoreError> {
+    append_bytes(output, artifact.path.as_bytes())?;
+    append_bytes(output, artifact.identity.as_bytes())?;
+    output.extend_from_slice(&artifact.bytes.to_be_bytes());
+    Ok(())
+}
+
+fn append_evaluator(
+    output: &mut Vec<u8>,
+    evaluator: &EvaluatorDescriptor,
+) -> Result<(), CoreError> {
+    append_bytes(output, evaluator.identity.as_bytes())?;
+    append_bytes(output, evaluator.artifact_identity.as_bytes())?;
+    append_bytes(output, evaluator.closure_identity.as_bytes())?;
+    append_bytes(output, evaluator.plan_identity.as_bytes())?;
+    append_bytes(output, evaluator.version.as_bytes())?;
+    append_count(output, evaluator.options.len())?;
+    for option in &evaluator.options {
+        append_bytes(output, option.as_bytes())?;
+    }
+    append_bytes(output, evaluator.import_path_policy.as_str().as_bytes())
+}
+
+fn append_diagnostic(output: &mut Vec<u8>, diagnostic: &Diagnostic) -> Result<(), CoreError> {
+    append_bytes(output, diagnostic.schema.as_bytes())?;
+    append_bytes(output, diagnostic.class.as_bytes())?;
+    append_bytes(output, diagnostic.subject.as_bytes())?;
+    append_bytes(output, diagnostic.message.as_bytes())?;
+    append_bytes(
+        output,
+        diagnostic_severity_name(diagnostic.severity).as_bytes(),
+    )
+}
+
+const fn diagnostic_severity_name(severity: DiagnosticSeverity) -> &'static str {
+    match severity {
+        DiagnosticSeverity::Note => "note",
+        DiagnosticSeverity::Warning => "warning",
+        DiagnosticSeverity::Error => "error",
+    }
+}
+
+fn append_count(output: &mut Vec<u8>, count: usize) -> Result<(), CoreError> {
+    let count = u64::try_from(count).map_err(|_| CoreError::SizeOverflow)?;
+    output.extend_from_slice(&count.to_be_bytes());
+    Ok(())
+}
+
+fn append_bytes(output: &mut Vec<u8>, bytes: &[u8]) -> Result<(), CoreError> {
+    append_count(output, bytes.len())?;
+    output.extend_from_slice(bytes);
+    Ok(())
 }
 
 /// Octet v1 compatibility projection.
@@ -1478,7 +1597,18 @@ mod tests {
         let manifest = first.unwrap_or_else(panic_for_test);
         assert_eq!(receipt.schema, RECEIPT_SCHEMA);
         assert!(receipt.declared_input_identity.starts_with(BLAKE3_PREFIX));
-        assert!(manifest.manifest_identity.starts_with(BLAKE3_PREFIX));
+        assert_eq!(
+            receipt.receipt_identity,
+            "b3:63988937ba38273bce48c5b0e9fb01ba7925e0750f773dd3c634792cfc976f42"
+        );
+        assert_eq!(
+            manifest.manifest_identity,
+            "b3:cb77a96fc9d8321c2a83317412e331173650a8946d89ff33a800c31cfc9d6252"
+        );
+        let receipt_bytes = encode_receipt_identity(&receipt).unwrap_or_else(panic_for_test);
+        let manifest_bytes = encode_manifest_identity(&manifest).unwrap_or_else(panic_for_test);
+        assert_eq!(blake3_identity(&receipt_bytes), receipt.receipt_identity);
+        assert_eq!(blake3_identity(&manifest_bytes), manifest.manifest_identity);
         assert_eq!(verify_manifest_fresh(&manifest, &manifest), Ok(()));
     }
 
@@ -1830,6 +1960,12 @@ mod tests {
         assert_ne!(baseline.source.identity, source_changed.source.identity);
         assert_ne!(baseline.dependencies, dependency_changed.dependencies);
         assert_ne!(baseline.output.identity, output_changed.output.identity);
+        assert_ne!(baseline.receipt_identity, source_changed.receipt_identity);
+        assert_ne!(
+            baseline.receipt_identity,
+            dependency_changed.receipt_identity
+        );
+        assert_ne!(baseline.receipt_identity, output_changed.receipt_identity);
         assert_ne!(
             baseline.declared_input_identity,
             source_changed.declared_input_identity

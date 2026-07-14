@@ -1,6 +1,6 @@
 {
-  "schema": "onix-nickel-export-manifest/v2",
-  "generator": "nickel-export-core/v2",
+  "schema": "onix-nickel-export-manifest/v3",
+  "generator": "nickel-export-core/v3",
   "evaluator": {
     "identity": "nixpkgs:nickel",
     "artifact_identity": "b3:44110681fb63c5a68c4476d76bc6dbc86ae295e791bdc6125d02e8a4acb02d34",
@@ -19,8 +19,9 @@
   },
   "exports": [
     {
-      "schema": "onix-nickel-export-receipt/v2",
+      "schema": "onix-nickel-export-receipt/v3",
       "family_id": "fixtures.json",
+      "receipt_identity": "b3:5b9935c5ebff99a3e3e87d774214a820d9fb0615615443fd441445bfad5f8a2e",
       "declared_input_identity": "b3:4c525d7473432444ed3dccba600c62dc878557354540a059b445027038aa79f0",
       "source": {
         "path": "fixtures/config.ncl",
@@ -65,5 +66,5 @@
       "non_claim": "Nickel export success proves only exact declared input and output identities under the recorded evaluator descriptor; the declared input identity is not proof of a complete dependency closure or a safe cache key; the receipt does not prove deployability, product-policy conformance, evaluator equivalence, build success, or release eligibility"
     }
   ],
-  "manifest_identity": "b3:7096ca2b6b8986b310880ef47036165e987989cea6ae1c6c4adee1db4f51884c"
+  "manifest_identity": "b3:35545928a3685cefa7b3a2e7686bbb064610c8d387365dd4984251a08f3c574c"
 }

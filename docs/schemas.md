@@ -47,10 +47,11 @@ Diagnostics contain a stable `class`, `subject`, human-readable `message`, and `
 
 The CLI emits one JSON object on stderr with a stable `stage` and human-readable `message`. Evaluator spawn/version/execution failures, unsafe paths, source failures, admission failures, stale artifacts, serialization failures, and write failures never include a successful receipt.
 
-## Receipt: `onix-nickel-export-receipt/v2`
+## Receipt: `onix-nickel-export-receipt/v3`
 
 A receipt binds:
 
+- `receipt_identity`, BLAKE3 over `onix-nickel-export-receipt-identity/v1` canonical bytes;
 - the versioned `declared_input_identity` described above;
 - exact source, dependency, and output bytes with `b3:` BLAKE3 identities and byte lengths;
 - family, selector, contract, format, import paths, and destination;
@@ -59,9 +60,9 @@ A receipt binds:
 
 The core rejects source/output path mismatches, incomplete dependency material, undeclared observed imports, incomplete evaluator-observed closures, error diagnostics, unsafe artifact paths, malformed identities, weakened non-claims, and conservative secret markers in authored source/dependencies without opt-in. Versioned request, receipt, manifest, artifact, diagnostic, evaluator, and resource-profile records reject unknown fields. Deserialization produces wire values; pure admission produces opaque `AdmittedReceipt` and `VerifiedManifest` states, and compatibility projections require those admitted states.
 
-## Manifest: `onix-nickel-export-manifest/v2`
+## Manifest: `onix-nickel-export-manifest/v3`
 
-A manifest contains receipts sorted by destination and one shared evaluator descriptor. Duplicate destinations and mixed evaluator descriptors are rejected. `manifest_identity` is BLAKE3 over the canonical manifest payload before the identity field is attached. Freshness is exact equality against a newly derived manifest.
+A manifest contains receipts sorted by destination and one shared evaluator descriptor. Duplicate destinations and mixed evaluator descriptors are rejected. `manifest_identity` is BLAKE3 over `onix-nickel-export-manifest-identity/v1` canonical bytes before the identity field is attached. Receipt and manifest canonical bytes use checked big-endian lengths and list counts; pretty JSON remains only the human-facing wire representation. Freshness is exact equality against a newly derived manifest.
 
 ## Compatibility projections
 
