@@ -2189,6 +2189,45 @@ mod tests {
         assert!(admit_manifest(weakened).is_err());
     }
 
+    // r[verify nickel_export.core.manifest_integrity_verification]
+    #[test]
+    fn supplied_artifact_verification_accepts_exact_bytes_and_rejects_mismatch_or_unknown() {
+        let evaluator = evaluator("nickel-cli");
+        let receipt = receipt_for("generated/config.json", &evaluator);
+        let manifest =
+            build_manifest(core::slice::from_ref(&receipt)).unwrap_or_else(panic_for_test);
+        let exact = [
+            ArtifactMaterial {
+                path: "config/source.ncl",
+                bytes: SOURCE,
+            },
+            ArtifactMaterial {
+                path: "config/dependency.ncl",
+                bytes: DEPENDENCY,
+            },
+            ArtifactMaterial {
+                path: "generated/config.json",
+                bytes: OUTPUT,
+            },
+        ];
+        assert_eq!(
+            verify_supplied_artifacts(&manifest, &exact),
+            Ok(exact.len())
+        );
+
+        let mismatched = [ArtifactMaterial {
+            path: "generated/config.json",
+            bytes: b"mismatched output",
+        }];
+        assert!(verify_supplied_artifacts(&manifest, &mismatched).is_err());
+
+        let unknown = [ArtifactMaterial {
+            path: "generated/unknown.json",
+            bytes: OUTPUT,
+        }];
+        assert!(verify_supplied_artifacts(&manifest, &unknown).is_err());
+    }
+
     #[test]
     fn stale_manifest_is_rejected() {
         let evaluator = evaluator("nickel-cli");
