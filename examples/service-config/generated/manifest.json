@@ -1,0 +1,52 @@
+{
+  "schema": "onix-nickel-export-manifest/v1",
+  "generator": "nickel-export-core/v1",
+  "evaluator": {
+    "identity": "nixpkgs:nickel",
+    "version": "nickel-lang-cli-1.17.0",
+    "options": [
+      "contract=examples/service-config/contract.ncl",
+      "format=json"
+    ],
+    "import_path_policy": "declared_only"
+  },
+  "exports": [
+    {
+      "schema": "onix-nickel-export-receipt/v1",
+      "family_id": "examples.service-config",
+      "source": {
+        "path": "examples/service-config/service.ncl",
+        "identity": "b3:916fc96fa74363bbc0d0c9e816644cc28077d65f16d883b0348bfe1b392d89d3",
+        "bytes": 217
+      },
+      "dependencies": [
+        {
+          "path": "examples/service-config/contract.ncl",
+          "identity": "b3:26a56370c6c9554f46a8b11ff9aab41c72b81ef7215bf777fc2adc8a39c63235",
+          "bytes": 155
+        }
+      ],
+      "import_paths": [],
+      "selector": "",
+      "contract": "examples/service-config/contract.ncl",
+      "format": "json",
+      "output": {
+        "path": "examples/service-config/generated/service.json",
+        "identity": "b3:44a72061abc40f805df323c99d0bb0a54fff9eb2ac3b46c3783393c1ee2ef3e1",
+        "bytes": 170
+      },
+      "evaluator": {
+        "identity": "nixpkgs:nickel",
+        "version": "nickel-lang-cli-1.17.0",
+        "options": [
+          "contract=examples/service-config/contract.ncl",
+          "format=json"
+        ],
+        "import_path_policy": "declared_only"
+      },
+      "diagnostics": [],
+      "non_claim": "Nickel export success proves only exact declared input and output identities under the recorded evaluator descriptor; it does not prove deployability, product-policy conformance, evaluator equivalence, build success, or release eligibility"
+    }
+  ],
+  "manifest_identity": "b3:a996a73c38f381a344d6e5127f7462fb2910e4c3c4b37ab83dc20441d13cc78d"
+}

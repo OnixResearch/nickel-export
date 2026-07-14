@@ -54,6 +54,7 @@
               install -Dm644 release/evidence.md "$out/share/doc/nickel-export/release-evidence.md"
               install -Dm644 README.md "$out/share/doc/nickel-export/README.md"
               install -Dm644 docs/schemas.md "$out/share/doc/nickel-export/schemas.md"
+              install -Dm644 docs/examples.md "$out/share/doc/nickel-export/examples.md"
               install -Dm644 docs/migration.md "$out/share/doc/nickel-export/migration.md"
               install -Dm644 LICENSE "$out/share/licenses/nickel-export/LICENSE"
             '';
@@ -187,6 +188,14 @@
                 --manifest "fixtures/generated/$format.manifest.json" \
                 --check > "$TMPDIR/$format.receipt.json"
             done
+            nickel-export export \
+              --spec examples/service-config/request.json \
+              --root . \
+              --evaluator "${pkgs.nickel}/bin/nickel" \
+              --evaluator-identity nixpkgs:nickel \
+              --evaluator-version nickel-lang-cli-1.17.0 \
+              --manifest examples/service-config/generated/manifest.json \
+              --check > "$TMPDIR/service-config.receipt.json"
             if nickel-export export \
               --spec fixtures/requests/unsafe.json \
               --root . \

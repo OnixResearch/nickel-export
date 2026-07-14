@@ -1,0 +1,12 @@
+{
+  "schema": "onix-nickel-export-request/v1",
+  "family_id": "examples.service-config",
+  "source": "examples/service-config/service.ncl",
+  "dependencies": ["examples/service-config/contract.ncl"],
+  "import_paths": [],
+  "selector": "",
+  "contract": "examples/service-config/contract.ncl",
+  "format": "json",
+  "destination": "examples/service-config/generated/service.json",
+  "allow_secret_material": false
+}

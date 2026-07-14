@@ -1,0 +1,11 @@
+{
+  "listen": {
+    "address": "127.0.0.1",
+    "port": 8080
+  },
+  "logging": {
+    "format": "json",
+    "include_request_ids": true
+  },
+  "service": "payments-api"
+}

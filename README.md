@@ -2,6 +2,17 @@
 
 `nickel-export` is the independent, evaluator-neutral boundary for deterministic Nickel export requests, exact-byte identities, diagnostics, receipts, and freshness manifests.
 
+## Start here
+
+Nickel already converts Nickel values to JSON, TOML, YAML, and text. This tool
+adds a receipt that answers: **which exact source, dependencies, evaluator, and
+output bytes belonged to this export?** Its check mode then detects a stale or
+manually edited generated artifact.
+
+See the [worked service-configuration example](docs/examples.md) for the source,
+contract, generated JSON, receipt manifest, CI command, expected failures, and
+cases where this tool is unnecessary.
+
 The repository separates a pure core from evaluator and filesystem authority:
 
 - `nickel-export-core` is `#![no_std]` + `alloc`. It normalizes requests, validates complete declared dependency sets, computes BLAKE3 identities, rejects error diagnostics and secret-like material, builds deterministic receipts/manifests, checks freshness, and projects legacy Octet and Mantle shapes. It never evaluates Nickel or performs I/O.
@@ -18,8 +29,7 @@ An accepted receipt proves exact declared input and output identities under one 
 A request is typed by `onix-nickel-export-request/v1` and names a source, all exact dependencies, import paths, optional selector, optional consumer-owned contract metadata, native output format, and destination. The external CLI interprets non-empty contract metadata as a repository-relative contract file and requires it in `dependencies`; embedded consumers may retain a reviewed contract label while supplying captured diagnostics directly.
 
 ```console
-nix develop
-nickel-export export \
+nix develop -c cargo run --quiet -p nickel-export -- export \
   --spec fixtures/requests/json.json \
   --root . \
   --evaluator nickel \
@@ -33,7 +43,10 @@ Use `--write` to update the destination and manifest. Exactly one of `--write` a
 
 ## Schemas and compatibility
 
-Canonical schemas are documented in [docs/schemas.md](docs/schemas.md). Serialization is feature-gated in the core; `--no-default-features` keeps the core evaluator-neutral and `no_std`.
+Canonical schemas are documented in [docs/schemas.md](docs/schemas.md), and the
+[worked examples](docs/examples.md) show how those schemas fit into a concrete
+workflow. Serialization is feature-gated in the core; `--no-default-features`
+keeps the core evaluator-neutral and `no_std`.
 
 Compatibility projections preserve the checked legacy fields used by:
 
