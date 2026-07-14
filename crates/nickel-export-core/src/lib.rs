@@ -1607,6 +1607,7 @@ mod tests {
         );
         let receipt_bytes = encode_receipt_identity(&receipt).unwrap_or_else(panic_for_test);
         let manifest_bytes = encode_manifest_identity(&manifest).unwrap_or_else(panic_for_test);
+        assert_eq!(receipt_bytes, independent_receipt_bytes(receipt.as_wire()));
         assert_eq!(blake3_identity(&receipt_bytes), receipt.receipt_identity);
         assert_eq!(blake3_identity(&manifest_bytes), manifest.manifest_identity);
         assert_eq!(verify_manifest_fresh(&manifest, &manifest), Ok(()));
@@ -2166,6 +2167,72 @@ mod tests {
             diagnostics: Vec::new(),
         };
         build_receipt(&observation).unwrap_or_else(panic_for_test)
+    }
+
+    fn independent_receipt_bytes(receipt: &ExportReceipt) -> Vec<u8> {
+        let mut output = Vec::new();
+        independent_bytes(&mut output, RECEIPT_IDENTITY_SCHEMA.as_bytes());
+        independent_bytes(&mut output, receipt.schema.as_bytes());
+        independent_bytes(&mut output, receipt.family_id.as_bytes());
+        independent_bytes(&mut output, receipt.declared_input_identity.as_bytes());
+        independent_artifact(&mut output, &receipt.source);
+        independent_count(&mut output, receipt.dependencies.len());
+        for dependency in &receipt.dependencies {
+            independent_artifact(&mut output, dependency);
+        }
+        independent_count(&mut output, receipt.import_paths.len());
+        for import_path in &receipt.import_paths {
+            independent_bytes(&mut output, import_path.as_bytes());
+        }
+        independent_bytes(&mut output, receipt.selector.as_bytes());
+        independent_bytes(&mut output, receipt.contract.as_bytes());
+        independent_bytes(&mut output, receipt.format.as_str().as_bytes());
+        independent_artifact(&mut output, &receipt.output);
+        independent_evaluator(&mut output, &receipt.evaluator);
+        independent_count(&mut output, receipt.diagnostics.len());
+        for diagnostic in &receipt.diagnostics {
+            independent_bytes(&mut output, diagnostic.schema.as_bytes());
+            independent_bytes(&mut output, diagnostic.class.as_bytes());
+            independent_bytes(&mut output, diagnostic.subject.as_bytes());
+            independent_bytes(&mut output, diagnostic.message.as_bytes());
+            independent_bytes(
+                &mut output,
+                diagnostic_severity_name(diagnostic.severity).as_bytes(),
+            );
+        }
+        independent_bytes(&mut output, receipt.non_claim.as_bytes());
+        output
+    }
+
+    fn independent_evaluator(output: &mut Vec<u8>, evaluator: &EvaluatorDescriptor) {
+        independent_bytes(output, evaluator.identity.as_bytes());
+        independent_bytes(output, evaluator.artifact_identity.as_bytes());
+        independent_bytes(output, evaluator.closure_identity.as_bytes());
+        independent_bytes(output, evaluator.plan_identity.as_bytes());
+        independent_bytes(output, evaluator.version.as_bytes());
+        independent_count(output, evaluator.options.len());
+        for option in &evaluator.options {
+            independent_bytes(output, option.as_bytes());
+        }
+        independent_bytes(output, evaluator.import_path_policy.as_str().as_bytes());
+    }
+
+    fn independent_artifact(output: &mut Vec<u8>, artifact: &ArtifactIdentity) {
+        independent_bytes(output, artifact.path.as_bytes());
+        independent_bytes(output, artifact.identity.as_bytes());
+        output.extend_from_slice(&artifact.bytes.to_be_bytes());
+    }
+
+    fn independent_bytes(output: &mut Vec<u8>, bytes: &[u8]) {
+        independent_count(output, bytes.len());
+        output.extend_from_slice(bytes);
+    }
+
+    fn independent_count(output: &mut Vec<u8>, count: usize) {
+        let Ok(count) = u64::try_from(count) else {
+            std::panic!("test vector length overflowed");
+        };
+        output.extend_from_slice(&count.to_be_bytes());
     }
 
     fn panic_for_test<T, E: fmt::Debug>(error: E) -> T {
