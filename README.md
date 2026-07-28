@@ -1,47 +1,109 @@
 # nickel-export
 
-`nickel-export` is the independent, evaluator-neutral boundary for deterministic Nickel export requests, declared-input fingerprints, exact-byte identities, diagnostics, receipts, and freshness manifests.
+`nickel-export` records deterministic Nickel exports. It provides declared-input fingerprints, exact-byte identities, diagnostics, receipts, and freshness manifests.
 
-## Start here
+The boundary is independent of a specific evaluator.
 
-Nickel already converts Nickel values to JSON, TOML, YAML, and text. This tool
-adds a receipt that answers: **which exact source, dependencies, evaluator, and
-output bytes belonged to this export?** Its check mode then detects a stale or
-manually edited generated artifact.
+## Purpose
 
-See the [worked service-configuration example](docs/examples.md) for the source,
-contract, generated JSON, receipt manifest, CI command, expected failures, and
-cases where this tool is unnecessary.
+Nickel can export values as JSON, TOML, YAML, or text. `nickel-export` adds a receipt for four facts:
 
-The repository separates a pure core from evaluator and filesystem authority:
+- the exact source and declared dependencies
+- the evaluator identity
+- the execution-plan identity
+- the exact output bytes
 
-- `nickel-export-core` is `#![no_std]` + `alloc`. It strictly decodes wire values, normalizes requests, validates complete declared dependency sets, computes BLAKE3 identities, rejects error diagnostics and secret-like material, and produces opaque `AdmittedReceipt` and `VerifiedManifest` states. Only admitted evidence reaches freshness checks or legacy Octet and Mantle projections. It never evaluates Nickel or performs I/O.
-- `nickel-export` is a thin std shell. It captures declared files into a private path-preserving snapshot, removes ambient evaluator environment authority, invokes an explicit external Nickel program under the checked `config/resource-limits.ncl` profile, applies an optional declared contract, writes generated artifacts, and implements fail-closed `--check` mode.
-- `proofs/` contains bounded Verus models for pre-hash encoding injectivity, path safety/idempotence, and admitted-state preservation. Exact BLAKE3 source identities and checked correspondence vectors make the separate Rust/model mapping auditable without claiming formal refinement.
+Check mode detects stale or manually edited generated artifacts.
+
+Read the [service-configuration example](docs/examples.md) for a complete workflow. It includes expected failures and cases where this tool is unnecessary.
+
+## Architecture
+
+The repository separates pure logic from evaluator and filesystem authority.
+
+### `nickel-export-core`
+
+`nickel-export-core` uses `#![no_std]` plus `alloc`. It performs these functions:
+
+- decodes wire values strictly
+- normalizes requests
+- checks complete declared dependency sets
+- computes BLAKE3 identities
+- rejects error diagnostics and secret-like material
+- produces opaque `AdmittedReceipt` and `VerifiedManifest` states
+
+Only admitted evidence can enter freshness checks or compatibility projections. The core does not evaluate Nickel or perform I/O.
+
+### `nickel-export`
+
+`nickel-export` is a thin standard-library shell. It performs these functions:
+
+- captures declared files in a private path-preserving snapshot
+- removes ambient evaluator environment authority
+- runs an explicit external Nickel program
+- applies the checked `config/resource-limits.ncl` profile
+- applies an optional declared contract
+- writes generated artifacts
+- implements fail-closed `--check` mode
+
+### `proofs/`
+
+`proofs/` contains bounded Verus models for these properties:
+
+- pre-hash encoding injectivity
+- path safety and idempotence
+- admitted-state preservation
+
+Exact BLAKE3 source identities and correspondence vectors connect the Rust code to the models. They do not prove formal refinement.
 
 ## Claim boundary
 
-An accepted receipt binds one `declared_input_identity` to exact output bytes
-under a descriptor containing the resolved evaluator artifact hash and typed
-execution-plan identity. The declared identity excludes the
-consumer label, destination, output, and diagnostics, so equal declared
-identities can expose differing outputs across repeated evaluations.
+An accepted receipt binds one `declared_input_identity` to exact output bytes. Its descriptor includes the evaluator artifact hash and typed execution-plan identity.
 
-An executable hash does not prove its dynamic-library closure; adapters may add
-an explicitly classified Nix or Mantle closure identity when they can verify it.
-The receipt does **not** prove evaluator equivalence, deployability,
-consumer-policy conformance, build success, semantic correctness, or release
-eligibility.
-`snapshot_only` means the CLI evaluated the captured declared files in a private
-snapshot with ambient environment variables removed, but did not sandbox every
-possible filesystem read or observe the full import closure. The identity is
-therefore not a safe cache key. Consumers requiring an evaluator-observed
-closure must use an adapter that supplies `EvaluatorObservedClosure` evidence
-to the core. Receipts never conceal this distinction.
+The declared identity excludes these values:
+
+- consumer label
+- destination
+- output
+- diagnostics
+
+As a result, repeated evaluations can have equal declared identities and different output bytes.
+
+An executable hash does not prove its dynamic-library closure. An adapter can add a classified Nix or Mantle closure identity after it checks that closure.
+
+A receipt does not prove these properties:
+
+- evaluator equivalence
+- deployability
+- consumer-policy conformance
+- build success
+- semantic correctness
+- release eligibility
+
+`snapshot_only` has a narrow meaning. The CLI evaluated captured declared files in a private snapshot and removed ambient environment variables.
+
+It did not sandbox every possible filesystem read. It also did not observe the full import closure.
+
+Therefore, a `snapshot_only` identity is not a safe cache key. A consumer that needs observed closure evidence must supply `EvaluatorObservedClosure` evidence.
+
+Receipts always preserve this distinction.
 
 ## Usage
 
-A request is typed by `onix-nickel-export-request/v1` and names a source, all exact dependencies, import paths, optional selector, optional consumer-owned contract metadata, native output format, and destination. The external CLI interprets non-empty contract metadata as a repository-relative contract file and requires it in `dependencies`; embedded consumers may retain a reviewed contract label while supplying captured diagnostics directly.
+A request uses the `onix-nickel-export-request/v1` type. It names these values:
+
+- source and exact dependencies
+- import paths
+- an optional selector
+- optional consumer-owned contract metadata
+- native output format
+- destination
+
+For the external CLI, nonempty contract metadata names a repository-relative contract file. The request must include that file in `dependencies`.
+
+An embedded consumer can retain a reviewed contract label and supply captured diagnostics directly.
+
+### Check an export
 
 ```console
 nix develop -c cargo run --quiet -p nickel-export -- export \
@@ -54,11 +116,42 @@ nix develop -c cargo run --quiet -p nickel-export -- export \
   --check
 ```
 
-Use `--write` to update the destination and manifest. Exactly one of `--write` and `--check` is required. Write and check modes take a repository lock; writes stage and sync both files, publish a durable transaction marker, atomically rename each file, and leave interrupted transactions fail-closed for deterministic recovery. Embedded consumers may instead atomically publish one pointer to a complete generation directory. Source, dependency, evaluator, output, diagnostic, replay-run, and process-time bounds come from the Nickel-authored `config/resource-limits.ncl` profile embedded in the CLI; timeout, stream overflow, and size conversion failures issue no receipt.
+Use `--write` to update the destination and manifest. You must select exactly one of `--write` and `--check`.
 
-Add `--replay-runs 3` to execute the same captured snapshot and typed evaluator plan three times sequentially. Agreement prints a deterministic replay report followed by the ordinary receipt. Divergence, evaluator failure, timeout, or oversized output exits nonzero with the replay report nested in the shell error and no success receipt. This is bounded detection evidence, not proof that future runs are deterministic.
+Write and check modes take a repository lock. Write mode performs these actions:
 
-Verify stored canonical integrity without running Nickel or writing files:
+1. Stage and synchronize both files.
+2. Publish a durable transaction marker.
+3. Rename each file atomically.
+4. Leave an interrupted transaction in a fail-closed state for deterministic recovery.
+
+An embedded consumer can instead publish one pointer to a complete generation directory.
+
+The embedded resource profile bounds these inputs and observations:
+
+- source and dependency sizes
+- evaluator output
+- diagnostics
+- replay runs
+- process time
+
+A timeout, stream overflow, or size-conversion failure produces no receipt.
+
+### Detect replay divergence
+
+Add `--replay-runs 3` to run the same snapshot and evaluator plan three times in sequence.
+
+If all runs agree, the CLI prints a deterministic replay report. Then it prints the ordinary receipt.
+
+If a run diverges or fails, the command exits with a nonzero status. Timeouts and oversized output have the same result.
+
+The shell error contains the replay report. The command does not produce a success receipt.
+
+This report is bounded detection evidence. It does not prove that future runs are deterministic.
+
+### Check stored canonical integrity
+
+Run this command without Nickel and without file writes:
 
 ```console
 nix develop -c cargo run --quiet -p nickel-export -- verify \
@@ -67,27 +160,26 @@ nix develop -c cargo run --quiet -p nickel-export -- verify \
   --check-artifacts
 ```
 
-Structural integrity is not freshness or semantic correctness. `--check-artifacts`
-only verifies exact bytes for the manifest paths supplied from the selected
-repository root.
+Structural integrity is not freshness or semantic correctness. `--check-artifacts` checks exact bytes only for the manifest paths under the selected root.
 
 ## Schemas and compatibility
 
-Canonical schemas are documented in [docs/schemas.md](docs/schemas.md). Receipt
-and manifest identities use versioned schema-owned length-delimited bytes;
-pretty JSON is only the reviewable wire form. The
-[worked examples](docs/examples.md) show how those schemas fit into a concrete
-workflow. Serialization is feature-gated in the core; `--no-default-features`
-keeps the core evaluator-neutral and `no_std`.
+[docs/schemas.md](docs/schemas.md) documents the canonical schemas. Receipt and manifest identities use versioned, length-delimited bytes that the schemas own.
 
-Compatibility projections preserve the checked legacy fields used by:
+Pretty JSON is only the reviewable wire form. The [worked examples](docs/examples.md) show the schemas in a complete workflow.
 
-- Octet `octet-nickel-export-manifest/v1`;
-- Mantle `mantle-nickel-export-receipt-v1`.
+Serialization is an optional core feature. `--no-default-features` keeps the core evaluator-neutral and `no_std`.
 
-These are adapters, not alternate semantic owners. Consumer evaluation strategy, destination authority, product policy, and release gates remain outside this repository.
+Compatibility projections preserve checked legacy fields for these formats:
 
-## Validation and release
+- Octet `octet-nickel-export-manifest/v1`
+- Mantle `mantle-nickel-export-receipt-v1`
+
+These projections are adapters. They are not alternate semantic owners.
+
+Consumers retain evaluation strategy, destination authority, product policy, and release gates.
+
+## Checks and release
 
 ```console
 cargo test --workspace
@@ -98,25 +190,42 @@ nix build .#checks.x86_64-linux.identity-proofs --no-link -L
 nix flake check -L
 ```
 
-The typed repository and release profiles live in `config/repository.ncl` and `release/profile.ncl`. Checked JSON exports are freshness-tested. The pinned Nix input, Rust toolchain, Nickel evaluator cohort, package license map, positive/negative fixtures, host/Wasm core checks, and CLI tamper tests make the release boundary reproducible.
+Typed repository and release profiles are in `config/repository.ncl` and `release/profile.ncl`. The checks include generated JSON freshness.
 
-Distribution is through immutable Git revisions and Nix inputs. Both Cargo packages set `publish = false`; crates.io is not a release channel for this project.
+The release boundary also includes these inputs:
 
-See [docs/migration.md](docs/migration.md) for the dual-run consumer cutover and rollback procedure.
+- pinned Nix input and Rust toolchain
+- Nickel evaluator cohort
+- package license map
+- positive and negative fixtures
+- host and Wasm core checks
+- CLI tamper tests
+
+Distribution uses immutable Git revisions and Nix inputs. Both Cargo packages set `publish = false`.
+
+Crates.io is not a release channel. Read [docs/migration.md](docs/migration.md) for dual-run migration and rollback instructions.
 
 ## License
 
-`nickel-export-core` is `MPL-2.0`; the `nickel-export` evaluator/file shell is `AGPL-3.0-or-later`. Complete texts and the package map are in [LICENSE](LICENSE), [LICENSES](LICENSES), and the typed [repository contract](config/repository.ncl).
+`nickel-export-core` uses `MPL-2.0`. The evaluator and file shell uses `AGPL-3.0-or-later`.
 
-Package licensing is distribution metadata and is not included in canonical export identity unless a versioned schema explicitly adds it. Earlier grants and third-party terms remain intact; the split does not transfer evaluator authority into the core.
+Complete license texts and the package map are available in these locations:
+
+- [LICENSE](LICENSE)
+- [LICENSES](LICENSES)
+- [typed repository contract](config/repository.ncl)
+
+Package licensing is distribution metadata. It is not part of canonical export identity unless a versioned schema adds it.
+
+Earlier grants and third-party terms remain unchanged. The license split does not transfer evaluator authority into the core.
 
 ## References
 
-The initial extraction compared these codebases at fixed revisions. They remain references only; they do not transfer consumer-owned policy or evaluator authority into this repository.
+These fixed revisions informed the initial extraction. They remain references and do not transfer consumer policy or evaluator authority.
 
 - [Octet `nickel_export.rs` at `49d2262d78462c41c7f732eeeda267c78a813606`](https://github.com/OnixResearch/octet/blob/49d2262d78462c41c7f732eeeda267c78a813606/crates/octet-standards/src/nickel_export.rs)
 - [Mantle `nickel_export.rs` at `732d0f1a59fb7001d38206321e8576b7c0ec2fda`](https://github.com/OnixResearch/mantle/blob/732d0f1a59fb7001d38206321e8576b7c0ec2fda/src/nickel_export.rs)
 - [Cairn policy export shell at `7e9ed636203395b3808a65962f6bb6da60f57268`](https://github.com/OnixResearch/cairn/blob/7e9ed636203395b3808a65962f6bb6da60f57268/crates/cairn-cli/src/policy.rs)
 - [Trellis policy checker at `fe008bda65baf9a335fe837294837427973a4ab4`](https://github.com/OnixResearch/trellis/blob/fe008bda65baf9a335fe837294837427973a4ab4/scripts/check-verification-policy.rs)
 - [Animus generation checks at `f1a8995dca714938042d66336477aa72c518e0a2`](https://github.com/OnixResearch/animus/blob/f1a8995dca714938042d66336477aa72c518e0a2/flake.nix)
-- [Trellis serialization-injectivity proof patterns at `7f99b1b8f0be0fcec5fad6334a2af6fc8746bf25`](https://github.com/OnixResearch/trellis/blob/7f99b1b8f0be0fcec5fad6334a2af6fc8746bf25/src/serialize_inj.rs)
+- [Trellis serialization proof patterns at `7f99b1b8f0be0fcec5fad6334a2af6fc8746bf25`](https://github.com/OnixResearch/trellis/blob/7f99b1b8f0be0fcec5fad6334a2af6fc8746bf25/src/serialize_inj.rs)
