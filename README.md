@@ -179,6 +179,12 @@ These projections are adapters. They are not alternate semantic owners.
 
 Consumers retain evaluation strategy, destination authority, product policy, and release gates.
 
+## Performance and process bounds
+
+Version probes and evaluation share the pinned Bounded Exec mechanism. The shell borrows captured bytes, limits total input, and assesses replay incrementally.
+
+Read [performance and resource limits](docs/performance.md) for benchmark commands, exact limits, and cache restrictions.
+
 ## Checks and release
 
 ```console
@@ -229,3 +235,4 @@ These fixed revisions informed the initial extraction. They remain references an
 - [Trellis policy checker at `fe008bda65baf9a335fe837294837427973a4ab4`](https://github.com/OnixResearch/trellis/blob/fe008bda65baf9a335fe837294837427973a4ab4/scripts/check-verification-policy.rs)
 - [Animus generation checks at `f1a8995dca714938042d66336477aa72c518e0a2`](https://github.com/OnixResearch/animus/blob/f1a8995dca714938042d66336477aa72c518e0a2/flake.nix)
 - [Trellis serialization proof patterns at `7f99b1b8f0be0fcec5fad6334a2af6fc8746bf25`](https://github.com/OnixResearch/trellis/blob/7f99b1b8f0be0fcec5fad6334a2af6fc8746bf25/src/serialize_inj.rs)
+- [Bounded Exec](https://git.onix.computer/z2CpqLFpdP36fZXYUK5ZNWxMibpCo.git), consumed at `29dac88ecded94457572db3fdfaaaab95fa91525` for bounded process mechanics. The export shell retains evaluator and receipt authority.

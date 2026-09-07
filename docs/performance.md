@@ -36,6 +36,23 @@ The manifest measurement compares the old full scan with production verification
 
 Checked-in measurement logs record scoped observations. They do not establish an end-to-end export speedup. The maintainers own benchmark updates and regression controls.
 
+## Recorded service-configuration sample
+
+The [CLI measurement](measurements/cli.json) compares baseline `710b6e03a8faf74f6afc6cc8ef36d7667958b70d` against this implementation. Both use Nix-built binaries and the same Nickel executable. Each sample includes `--write`, filesystem synchronization, and an exact output comparison.
+
+The local sample used one warmup and eight measured runs per binary. Mean time changed from 62.8 ms to 59.4 ms. This is a small local gain, not a general latency guarantee. The [mechanism measurements](measurements/mechanisms.log) cover the larger manifest gain separately.
+
+To repeat the CLI comparison, copy `examples/service-config/` into a private benchmark root. Keep an unchanged copy of `generated/service.json` as the expected output. Run each binary with these arguments:
+
+```sh
+export --spec examples/service-config/request.json --root "$BENCH_ROOT" \
+  --evaluator "$EVALUATOR" --evaluator-identity nixpkgs:nickel \
+  --evaluator-version nickel-lang-cli-1.17.0 \
+  --manifest examples/service-config/generated/manifest.json --write
+```
+
+Each measured command then uses `cmp` against the expected output. Hyperfine records the timings with `--warmup 1 --runs 8 --export-json cli.json`. The benchmark does not alter the source checkout or measure dependency downloads.
+
 ## Reuse decisions
 
 `snapshot_only` remains unsafe as a result-cache key. The snapshot contains captured declared files, but the external evaluator can read outside that snapshot. Repeated declared identity does not justify a cache hit.

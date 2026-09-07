@@ -1,0 +1,29 @@
+   Compiling nickel-export-core v0.1.0 (/home/brittonr/git/OnixResearch/.pi/worktrees/nickel-export-improve/crates/nickel-export-core)
+   Compiling nickel-export v0.1.0 (/home/brittonr/git/OnixResearch/.pi/worktrees/nickel-export-improve/crates/nickel-export)
+    Finished `release` profile [optimized] target(s) in 10.33s
+     Running unittests src/lib.rs (/home/brittonr/.cargo-target/release/deps/nickel_export-ba73e0d671946aa7)
+
+running 1 test
+capture,input_bytes=1048576,runs=32,copy_ns=1390170,borrow_ns=1823
+replay,runs=4,retained_reference_bytes=1048576,maximum_live_output_buffers=2
+test improvements_tests::measure_capture_and_replay ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/home/brittonr/.cargo-target/release/deps/nickel_export-c751246f303bd521)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/brittonr/.cargo-target/release/deps/nickel_export_core-ddb1ab5c915cc237)
+
+running 1 test
+index,exports=1,runs=32,scan_ns=6081,index_ns=5821
+index,exports=16,runs=32,scan_ns=118182,index_ns=203753
+index,exports=256,runs=32,scan_ns=9042688,index_ns=3518286
+index,exports=1024,runs=32,scan_ns=180799456,index_ns=15520541
+test tests::measure_manifest_index ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.25s
+

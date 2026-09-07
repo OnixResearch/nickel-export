@@ -161,6 +161,7 @@
 
           fuzz-target = rustPlatform.buildRustPackage {
             pname = "nickel-export-fuzz-target";
+            cargoLock.outputHashes = cargoOutputHashes;
             version = "0.1.0";
             src = self;
             cargoRoot = "fuzz";
