@@ -13,6 +13,8 @@ name = "nickel-export"
 path = "src/main.rs"
 
 [dependencies]
+bounded-exec = { git = "https://git.onix.computer/z2CpqLFpdP36fZXYUK5ZNWxMibpCo.git", rev = "29dac88ecded94457572db3fdfaaaab95fa91525" }
+blake3 = { workspace = true, features = ["std"] }
 nickel-export-core = { version = "=0.1.0", path = "../nickel-export-core", features = ["serde"] }
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }

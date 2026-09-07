@@ -19,13 +19,23 @@
   };
 
   outputs =
-    { self, nixpkgs, rust-overlay, cairn, octet }:
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+      cairn,
+      octet,
+    }:
     let
       systems = [
         "x86_64-linux"
         "aarch64-linux"
       ];
       eachSystem = function: nixpkgs.lib.genAttrs systems (system: function system);
+      # Nix fetches require their SHA-256 NAR identity, not a BLAKE3 receipt.
+      cargoOutputHashes = {
+        "bounded-exec-0.1.0" = "sha256-BVmqyUYyoNpY6LfOABxwPO3DY88ZtXeKNg3TPoGCcL0=";
+      };
     in
     {
       packages = eachSystem (
@@ -44,6 +54,7 @@
         {
           nickel-export = rustPlatform.buildRustPackage {
             pname = "nickel-export";
+            cargoLock.outputHashes = cargoOutputHashes;
             version = "0.1.0";
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
@@ -89,6 +100,7 @@
             name: target:
             rustPlatform.buildRustPackage {
               pname = name;
+              cargoLock.outputHashes = cargoOutputHashes;
               version = "0.1.0";
               src = self;
               cargoLock.lockFile = ./Cargo.lock;
@@ -96,7 +108,8 @@
                 "-p"
                 "nickel-export-core"
                 "--no-default-features"
-              ] ++ pkgs.lib.optionals (target != null) [
+              ]
+              ++ pkgs.lib.optionals (target != null) [
                 "--target"
                 target
               ];
@@ -109,6 +122,7 @@
         {
           cargo-test = rustPlatform.buildRustPackage {
             pname = "nickel-export-tests";
+            cargoLock.outputHashes = cargoOutputHashes;
             version = "0.1.0";
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
@@ -118,6 +132,7 @@
 
           cargo-clippy = rustPlatform.buildRustPackage {
             pname = "nickel-export-clippy";
+            cargoLock.outputHashes = cargoOutputHashes;
             version = "0.1.0";
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
@@ -130,16 +145,19 @@
             '';
           };
 
-          cargo-format = pkgs.runCommand "nickel-export-format" {
-            nativeBuildInputs = [ toolchain ];
-            src = self;
-          } ''
-            set -eu
-            cd "$src"
-            cargo fmt --all -- --check
-            cargo fmt --manifest-path fuzz/Cargo.toml -- --check
-            touch "$out"
-          '';
+          cargo-format =
+            pkgs.runCommand "nickel-export-format"
+              {
+                nativeBuildInputs = [ toolchain ];
+                src = self;
+              }
+              ''
+                set -eu
+                cd "$src"
+                cargo fmt --all -- --check
+                cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+                touch "$out"
+              '';
 
           fuzz-target = rustPlatform.buildRustPackage {
             pname = "nickel-export-fuzz-target";
@@ -153,244 +171,285 @@
             '';
           };
 
-          identity-proofs = pkgs.runCommand "nickel-export-identity-proofs" {
-            nativeBuildInputs = [
-              octetProductionVerus
-              octetVerusfmt
-              pkgs.b3sum
-              pkgs.coreutils
-              pkgs.diffutils
-              pkgs.gnugrep
-              pkgs.jq
-              pkgs.nickel
-            ];
-            src = self;
-          } ''
-            set -euo pipefail
-            proof_file="$src/proofs/identity_primitives.rs"
-            invalid_fixture="$src/proofs/fixtures/invalid/ambiguous-prefix.rs"
-            evidence="$src/proofs/generated/evidence.json"
-            verifier_root=${octetProductionVerus}/libexec/verus
+          identity-proofs =
+            pkgs.runCommand "nickel-export-identity-proofs"
+              {
+                nativeBuildInputs = [
+                  octetProductionVerus
+                  octetVerusfmt
+                  pkgs.b3sum
+                  pkgs.coreutils
+                  pkgs.diffutils
+                  pkgs.gnugrep
+                  pkgs.jq
+                  pkgs.nickel
+                ];
+                src = self;
+              }
+              ''
+                set -euo pipefail
+                proof_file="$src/proofs/identity_primitives.rs"
+                invalid_fixture="$src/proofs/fixtures/invalid/ambiguous-prefix.rs"
+                evidence="$src/proofs/generated/evidence.json"
+                verifier_root=${octetProductionVerus}/libexec/verus
 
-            octet-production-verus --identity > "$TMPDIR/verifier-identity.txt"
-            grep -F 'proof-verifier: verus@0.2026.05.17.e479cce' "$TMPDIR/verifier-identity.txt" > /dev/null
-            grep -F 'proof-verifier-source-revision: e479cce36490b8fa4b0fd7755aa742aec354372c' \
-              "$TMPDIR/verifier-identity.txt" > /dev/null
+                octet-production-verus --identity > "$TMPDIR/verifier-identity.txt"
+                grep -F 'proof-verifier: verus@0.2026.05.17.e479cce' "$TMPDIR/verifier-identity.txt" > /dev/null
+                grep -F 'proof-verifier-source-revision: e479cce36490b8fa4b0fd7755aa742aec354372c' \
+                  "$TMPDIR/verifier-identity.txt" > /dev/null
 
-            octet-production-verus \
-              --triggers-mode silent \
-              --rlimit ${toString proofRlimit} \
-              --crate-type=lib \
-              --extern vstd="$verifier_root/libvstd.rlib" \
-              --extern builtin="$verifier_root/libverus_builtin.rlib" \
-              --extern builtin_macros="$verifier_root/libverus_builtin_macros.so" \
-              --extern state_machines_macros="$verifier_root/libverus_state_machines_macros.so" \
-              -L "$verifier_root" \
-              --edition 2021 \
-              "$proof_file" 2>&1 | tee "$TMPDIR/proof.log"
-            grep -F 'verification results:: ${toString proofVerifiedObligations} verified, 0 errors' \
-              "$TMPDIR/proof.log" > /dev/null
+                octet-production-verus \
+                  --triggers-mode silent \
+                  --rlimit ${toString proofRlimit} \
+                  --crate-type=lib \
+                  --extern vstd="$verifier_root/libvstd.rlib" \
+                  --extern builtin="$verifier_root/libverus_builtin.rlib" \
+                  --extern builtin_macros="$verifier_root/libverus_builtin_macros.so" \
+                  --extern state_machines_macros="$verifier_root/libverus_state_machines_macros.so" \
+                  -L "$verifier_root" \
+                  --edition 2021 \
+                  "$proof_file" 2>&1 | tee "$TMPDIR/proof.log"
+                grep -F 'verification results:: ${toString proofVerifiedObligations} verified, 0 errors' \
+                  "$TMPDIR/proof.log" > /dev/null
 
-            set +e
-            octet-production-verus \
-              --triggers-mode silent \
-              --rlimit ${toString proofRlimit} \
-              --crate-type=lib \
-              --extern vstd="$verifier_root/libvstd.rlib" \
-              --extern builtin="$verifier_root/libverus_builtin.rlib" \
-              --extern builtin_macros="$verifier_root/libverus_builtin_macros.so" \
-              --extern state_machines_macros="$verifier_root/libverus_state_machines_macros.so" \
-              -L "$verifier_root" \
-              --edition 2021 \
-              "$invalid_fixture" > "$TMPDIR/invalid-proof.log" 2>&1
-            invalid_status="$?"
-            set -e
-            if test "$invalid_status" -eq 0; then
-              echo "invalid proof fixture unexpectedly verified" >&2
-              exit 1
-            fi
-            grep -F 'postcondition not satisfied' "$TMPDIR/invalid-proof.log" > /dev/null
-            echo "negative proof fixture rejected as expected"
+                set +e
+                octet-production-verus \
+                  --triggers-mode silent \
+                  --rlimit ${toString proofRlimit} \
+                  --crate-type=lib \
+                  --extern vstd="$verifier_root/libvstd.rlib" \
+                  --extern builtin="$verifier_root/libverus_builtin.rlib" \
+                  --extern builtin_macros="$verifier_root/libverus_builtin_macros.so" \
+                  --extern state_machines_macros="$verifier_root/libverus_state_machines_macros.so" \
+                  -L "$verifier_root" \
+                  --edition 2021 \
+                  "$invalid_fixture" > "$TMPDIR/invalid-proof.log" 2>&1
+                invalid_status="$?"
+                set -e
+                if test "$invalid_status" -eq 0; then
+                  echo "invalid proof fixture unexpectedly verified" >&2
+                  exit 1
+                fi
+                grep -F 'postcondition not satisfied' "$TMPDIR/invalid-proof.log" > /dev/null
+                echo "negative proof fixture rejected as expected"
 
-            octet-verusfmt --check --verus-only "$proof_file"
-            nickel typecheck "$src/proofs/evidence.ncl"
-            nickel export --format json "$src/proofs/evidence.ncl" > "$TMPDIR/evidence.json"
-            cmp "$TMPDIR/evidence.json" "$evidence"
+                octet-verusfmt --check --verus-only "$proof_file"
+                nickel typecheck "$src/proofs/evidence.ncl"
+                nickel export --format json "$src/proofs/evidence.ncl" > "$TMPDIR/evidence.json"
+                cmp "$TMPDIR/evidence.json" "$evidence"
 
-            verify_artifact() {
-              role="$1"
-              count="$(jq --arg role "$role" '[.artifacts[] | select(.role == $role)] | length' "$evidence")"
-              test "$count" -eq 1
-              path="$(jq --raw-output --arg role "$role" '.artifacts[] | select(.role == $role) | .path' "$evidence")"
-              expected_blake3="$(jq --raw-output --arg role "$role" '.artifacts[] | select(.role == $role) | .blake3' "$evidence")"
-              expected_bytes="$(jq --raw-output --arg role "$role" '.artifacts[] | select(.role == $role) | .bytes' "$evidence")"
-              actual_blake3="$(b3sum "$src/$path")"
-              actual_blake3="''${actual_blake3%% *}"
-              actual_bytes="$(wc -c < "$src/$path")"
-              test "$actual_blake3" = "$expected_blake3"
-              test "$actual_bytes" -eq "$expected_bytes"
-            }
+                verify_artifact() {
+                  role="$1"
+                  count="$(jq --arg role "$role" '[.artifacts[] | select(.role == $role)] | length' "$evidence")"
+                  test "$count" -eq 1
+                  path="$(jq --raw-output --arg role "$role" '.artifacts[] | select(.role == $role) | .path' "$evidence")"
+                  expected_blake3="$(jq --raw-output --arg role "$role" '.artifacts[] | select(.role == $role) | .blake3' "$evidence")"
+                  expected_bytes="$(jq --raw-output --arg role "$role" '.artifacts[] | select(.role == $role) | .bytes' "$evidence")"
+                  actual_blake3="$(b3sum "$src/$path")"
+                  actual_blake3="''${actual_blake3%% *}"
+                  actual_bytes="$(wc -c < "$src/$path")"
+                  test "$actual_blake3" = "$expected_blake3"
+                  test "$actual_bytes" -eq "$expected_bytes"
+                }
 
-            verify_artifact proof-source
-            verify_artifact implementation-source
-            verify_artifact correspondence-vectors
-            verify_artifact negative-proof-fixture
-            touch "$out"
-          '';
+                verify_artifact proof-source
+                verify_artifact implementation-source
+                verify_artifact correspondence-vectors
+                verify_artifact negative-proof-fixture
+                touch "$out"
+              '';
 
           core-no-std-host = coreCheck "nickel-export-core-no-std-host" null;
           core-no-std-wasm = coreCheck "nickel-export-core-no-std-wasm" "wasm32-unknown-unknown";
 
-          cairn-policy = pkgs.runCommand "nickel-export-cairn-policy" {
-            nativeBuildInputs = [ cairn.packages.${system}.cairn ];
-            src = self;
-          } ''
-            set -eu
-            cairn policy export \
-              --source "$src/cairn-policy/default.ncl" \
-              --output "$TMPDIR/cairn-policy.json"
-            cmp "$TMPDIR/cairn-policy.json" "$src/cairn-policy/generated/cairn-policy.json"
-            cairn validate \
-              --root "$src" \
-              --policy "$src/cairn-policy/generated/cairn-policy.json"
-            cairn traceability coverage \
-              --root "$src" \
-              --policy "$src/cairn-policy/generated/cairn-policy.json" \
-              --profile nickel-export-default \
-              --json > "$TMPDIR/traceability.json"
-            touch "$out"
-          '';
+          cairn-policy =
+            pkgs.runCommand "nickel-export-cairn-policy"
+              {
+                nativeBuildInputs = [ cairn.packages.${system}.cairn ];
+                src = self;
+              }
+              ''
+                set -eu
+                cairn policy export \
+                  --source "$src/cairn-policy/default.ncl" \
+                  --output "$TMPDIR/cairn-policy.json"
+                cmp "$TMPDIR/cairn-policy.json" "$src/cairn-policy/generated/cairn-policy.json"
+                cairn validate \
+                  --root "$src" \
+                  --policy "$src/cairn-policy/generated/cairn-policy.json"
+                cairn traceability coverage \
+                  --root "$src" \
+                  --policy "$src/cairn-policy/generated/cairn-policy.json" \
+                  --profile nickel-export-default \
+                  --json > "$TMPDIR/traceability.json"
+                touch "$out"
+              '';
 
-          nickel-contracts = pkgs.runCommand "nickel-export-contracts" {
-            nativeBuildInputs = [ pkgs.nickel ];
-            src = self;
-          } ''
-            set -eu
-            cd "$src"
-            nickel typecheck config/repository.ncl
-            nickel typecheck config/resource-limits.ncl
-            nickel typecheck release/profile.ncl
-            nickel export --format json config/tests/license-map.valid.ncl > /dev/null
-            if nickel export --format json config/tests/license-map.unknown-package.invalid.ncl > /dev/null 2>&1; then
-              echo "unknown package license mapping unexpectedly passed" >&2
-              exit 1
-            fi
-            if nickel export --format json config/tests/license-map.reversed.invalid.ncl > /dev/null 2>&1; then
-              echo "reversed package license mapping unexpectedly passed" >&2
-              exit 1
-            fi
-            nickel export --format json config/repository.ncl > "$TMPDIR/repository.json"
-            nickel export --format json config/resource-limits.ncl > "$TMPDIR/resource-limits.json"
-            nickel export --format json release/profile.ncl > "$TMPDIR/release-profile.json"
-            cmp "$TMPDIR/repository.json" config/generated/repository.json
-            cmp "$TMPDIR/resource-limits.json" config/generated/resource-limits.json
-            cmp "$TMPDIR/release-profile.json" release/generated/profile.json
-            touch "$out"
-          '';
+          nickel-contracts =
+            pkgs.runCommand "nickel-export-contracts"
+              {
+                nativeBuildInputs = [ pkgs.nickel ];
+                src = self;
+              }
+              ''
+                set -eu
+                cd "$src"
+                nickel typecheck config/repository.ncl
+                nickel typecheck config/resource-limits.ncl
+                nickel typecheck release/profile.ncl
+                nickel export --format json config/tests/license-map.valid.ncl > /dev/null
+                if nickel export --format json config/tests/license-map.unknown-package.invalid.ncl > /dev/null 2>&1; then
+                  echo "unknown package license mapping unexpectedly passed" >&2
+                  exit 1
+                fi
+                if nickel export --format json config/tests/license-map.reversed.invalid.ncl > /dev/null 2>&1; then
+                  echo "reversed package license mapping unexpectedly passed" >&2
+                  exit 1
+                fi
+                nickel export --format json config/repository.ncl > "$TMPDIR/repository.json"
+                nickel export --format json config/resource-limits.ncl > "$TMPDIR/resource-limits.json"
+                nickel export --format json release/profile.ncl > "$TMPDIR/release-profile.json"
+                cmp "$TMPDIR/repository.json" config/generated/repository.json
+                cmp "$TMPDIR/resource-limits.json" config/generated/resource-limits.json
+                cmp "$TMPDIR/release-profile.json" release/generated/profile.json
+                touch "$out"
+              '';
 
-          cli-e2e = pkgs.runCommand "nickel-export-cli-e2e" {
-            nativeBuildInputs = [
-              self.packages.${system}.nickel-export
-              pkgs.jq
-              pkgs.nickel
-            ];
-            src = self;
-          } ''
-            set -eu
-            cp -R --no-preserve=mode "$src" work
-            cd work
-            for format in json toml yaml raw; do
-              nickel-export export \
-                --spec "fixtures/requests/$format.json" \
-                --root . \
-                --evaluator "${pkgs.nickel}/bin/nickel" \
-                --evaluator-identity nixpkgs:nickel \
-                --evaluator-version nickel-lang-cli-1.17.0 \
-                --manifest "fixtures/generated/$format.manifest.json" \
-                --check > "$TMPDIR/$format.receipt.json"
-            done
-            nickel-export export \
-              --spec examples/service-config/request.json \
-              --root . \
-              --evaluator "${pkgs.nickel}/bin/nickel" \
-              --evaluator-identity nixpkgs:nickel \
-              --evaluator-version nickel-lang-cli-1.17.0 \
-              --manifest examples/service-config/generated/manifest.json \
-              --check > "$TMPDIR/service-config.receipt.json"
-            replay_runs="$(jq --raw-output '.replay.runs' release/generated/profile.json)"
-            expected_replay_output_lines=2
-            nickel-export export \
-              --spec fixtures/requests/json.json \
-              --root . \
-              --evaluator "${pkgs.nickel}/bin/nickel" \
-              --evaluator-identity nixpkgs:nickel \
-              --evaluator-version nickel-lang-cli-1.17.0 \
-              --manifest fixtures/generated/json.manifest.json \
-              --replay-runs "$replay_runs" \
-              --check > "$TMPDIR/fixtures-json-replay.jsonl"
-            test "$(wc -l < "$TMPDIR/fixtures-json-replay.jsonl")" \
-              -eq "$expected_replay_output_lines"
-            grep -F '"schema":"onix-nickel-export-replay-report/v1"' \
-              "$TMPDIR/fixtures-json-replay.jsonl" > /dev/null
-            for replay_attempt in first second; do
-              nickel-export export \
-                --spec examples/service-config/request.json \
-                --root . \
-                --evaluator "${pkgs.nickel}/bin/nickel" \
-                --evaluator-identity nixpkgs:nickel \
-                --evaluator-version nickel-lang-cli-1.17.0 \
-                --manifest examples/service-config/generated/manifest.json \
-                --replay-runs "$replay_runs" \
-                --check > "$TMPDIR/service-config-replay-$replay_attempt.jsonl"
-              test "$(wc -l < "$TMPDIR/service-config-replay-$replay_attempt.jsonl")" \
-                -eq "$expected_replay_output_lines"
-              grep -F '"schema":"onix-nickel-export-replay-report/v1"' \
-                "$TMPDIR/service-config-replay-$replay_attempt.jsonl" > /dev/null
-            done
-            cmp "$TMPDIR/service-config-replay-first.jsonl" \
-              "$TMPDIR/service-config-replay-second.jsonl"
-            nickel-export verify \
-              --manifest examples/service-config/generated/manifest.json \
-              --root . \
-              --check-artifacts > "$TMPDIR/service-config.integrity.json"
-            if nickel-export export \
-              --spec fixtures/requests/unsafe.json \
-              --root . \
-              --evaluator "${pkgs.nickel}/bin/nickel" \
-              --evaluator-identity nixpkgs:nickel \
-              --evaluator-version nickel-lang-cli-1.17.0 \
-              --manifest fixtures/generated/unsafe.manifest.json \
-              --check > /dev/null 2>&1; then
-              echo "unsafe fixture unexpectedly passed" >&2
-              exit 1
-            fi
-            if nickel-export export \
-              --spec fixtures/requests/json.json \
-              --root . \
-              --evaluator "${pkgs.nickel}/bin/nickel" \
-              --evaluator-identity nixpkgs:nickel \
-              --evaluator-version nickel-lang-cli-0.0.0-invalid \
-              --manifest fixtures/generated/json.manifest.json \
-              --check > /dev/null 2>&1; then
-              echo "mismatched evaluator version unexpectedly passed" >&2
-              exit 1
-            fi
-            cp fixtures/generated/config.json "$TMPDIR/config.json"
-            printf '\n' >> fixtures/generated/config.json
-            if nickel-export export \
-              --spec fixtures/requests/json.json \
-              --root . \
-              --evaluator "${pkgs.nickel}/bin/nickel" \
-              --evaluator-identity nixpkgs:nickel \
-              --evaluator-version nickel-lang-cli-1.17.0 \
-              --manifest fixtures/generated/json.manifest.json \
-              --check > /dev/null 2>&1; then
-              echo "tampered output unexpectedly passed freshness check" >&2
-              exit 1
-            fi
-            cmp "$TMPDIR/config.json" "$src/fixtures/generated/config.json"
-            touch "$out"
-          '';
+          # These checks also close pre-existing missing license evidence links.
+          # r[verify nickel_export.release.license_boundary.package_split]
+          # r[verify nickel_export.release.license_boundary.typed_profile]
+          # r[verify nickel_export.release.license_boundary.artifacts]
+          # r[verify nickel_export.release.license_boundary.generated_exports]
+          # r[verify nickel_export.release.license_boundary.validation]
+          # r[verify nickel_export.release.license_boundary.final_validation]
+          license-boundary =
+            pkgs.runCommand "nickel-export-license-boundary"
+              {
+                nativeBuildInputs = [
+                  toolchain
+                  pkgs.nickel
+                ];
+                src = self;
+              }
+              ''
+                set -eu
+                cd "$src"
+                rustc --edition=2024 tools/check-license-boundary.rs -o "$TMPDIR/check-license-boundary"
+                "$TMPDIR/check-license-boundary" "$src"
+                nickel typecheck config/repository.ncl
+                nickel export --format json config/repository.ncl > "$TMPDIR/repository.json"
+                nickel export --format json release/profile.ncl > "$TMPDIR/profile.json"
+                cmp "$TMPDIR/repository.json" config/generated/repository.json
+                cmp "$TMPDIR/profile.json" release/generated/profile.json
+                touch "$out"
+              '';
+
+          cli-e2e =
+            pkgs.runCommand "nickel-export-cli-e2e"
+              {
+                nativeBuildInputs = [
+                  self.packages.${system}.nickel-export
+                  pkgs.jq
+                  pkgs.nickel
+                ];
+                src = self;
+              }
+              ''
+                set -eu
+                cp -R --no-preserve=mode "$src" work
+                cd work
+                for format in json toml yaml raw; do
+                  nickel-export export \
+                    --spec "fixtures/requests/$format.json" \
+                    --root . \
+                    --evaluator "${pkgs.nickel}/bin/nickel" \
+                    --evaluator-identity nixpkgs:nickel \
+                    --evaluator-version nickel-lang-cli-1.17.0 \
+                    --manifest "fixtures/generated/$format.manifest.json" \
+                    --check > "$TMPDIR/$format.receipt.json"
+                done
+                nickel-export export \
+                  --spec examples/service-config/request.json \
+                  --root . \
+                  --evaluator "${pkgs.nickel}/bin/nickel" \
+                  --evaluator-identity nixpkgs:nickel \
+                  --evaluator-version nickel-lang-cli-1.17.0 \
+                  --manifest examples/service-config/generated/manifest.json \
+                  --check > "$TMPDIR/service-config.receipt.json"
+                replay_runs="$(jq --raw-output '.replay.runs' release/generated/profile.json)"
+                expected_replay_output_lines=2
+                nickel-export export \
+                  --spec fixtures/requests/json.json \
+                  --root . \
+                  --evaluator "${pkgs.nickel}/bin/nickel" \
+                  --evaluator-identity nixpkgs:nickel \
+                  --evaluator-version nickel-lang-cli-1.17.0 \
+                  --manifest fixtures/generated/json.manifest.json \
+                  --replay-runs "$replay_runs" \
+                  --check > "$TMPDIR/fixtures-json-replay.jsonl"
+                test "$(wc -l < "$TMPDIR/fixtures-json-replay.jsonl")" \
+                  -eq "$expected_replay_output_lines"
+                grep -F '"schema":"onix-nickel-export-replay-report/v1"' \
+                  "$TMPDIR/fixtures-json-replay.jsonl" > /dev/null
+                for replay_attempt in first second; do
+                  nickel-export export \
+                    --spec examples/service-config/request.json \
+                    --root . \
+                    --evaluator "${pkgs.nickel}/bin/nickel" \
+                    --evaluator-identity nixpkgs:nickel \
+                    --evaluator-version nickel-lang-cli-1.17.0 \
+                    --manifest examples/service-config/generated/manifest.json \
+                    --replay-runs "$replay_runs" \
+                    --check > "$TMPDIR/service-config-replay-$replay_attempt.jsonl"
+                  test "$(wc -l < "$TMPDIR/service-config-replay-$replay_attempt.jsonl")" \
+                    -eq "$expected_replay_output_lines"
+                  grep -F '"schema":"onix-nickel-export-replay-report/v1"' \
+                    "$TMPDIR/service-config-replay-$replay_attempt.jsonl" > /dev/null
+                done
+                cmp "$TMPDIR/service-config-replay-first.jsonl" \
+                  "$TMPDIR/service-config-replay-second.jsonl"
+                nickel-export verify \
+                  --manifest examples/service-config/generated/manifest.json \
+                  --root . \
+                  --check-artifacts > "$TMPDIR/service-config.integrity.json"
+                if nickel-export export \
+                  --spec fixtures/requests/unsafe.json \
+                  --root . \
+                  --evaluator "${pkgs.nickel}/bin/nickel" \
+                  --evaluator-identity nixpkgs:nickel \
+                  --evaluator-version nickel-lang-cli-1.17.0 \
+                  --manifest fixtures/generated/unsafe.manifest.json \
+                  --check > /dev/null 2>&1; then
+                  echo "unsafe fixture unexpectedly passed" >&2
+                  exit 1
+                fi
+                if nickel-export export \
+                  --spec fixtures/requests/json.json \
+                  --root . \
+                  --evaluator "${pkgs.nickel}/bin/nickel" \
+                  --evaluator-identity nixpkgs:nickel \
+                  --evaluator-version nickel-lang-cli-0.0.0-invalid \
+                  --manifest fixtures/generated/json.manifest.json \
+                  --check > /dev/null 2>&1; then
+                  echo "mismatched evaluator version unexpectedly passed" >&2
+                  exit 1
+                fi
+                cp fixtures/generated/config.json "$TMPDIR/config.json"
+                printf '\n' >> fixtures/generated/config.json
+                if nickel-export export \
+                  --spec fixtures/requests/json.json \
+                  --root . \
+                  --evaluator "${pkgs.nickel}/bin/nickel" \
+                  --evaluator-identity nixpkgs:nickel \
+                  --evaluator-version nickel-lang-cli-1.17.0 \
+                  --manifest fixtures/generated/json.manifest.json \
+                  --check > /dev/null 2>&1; then
+                  echo "tampered output unexpectedly passed freshness check" >&2
+                  exit 1
+                fi
+                cmp "$TMPDIR/config.json" "$src/fixtures/generated/config.json"
+                touch "$out"
+              '';
         }
       );
 

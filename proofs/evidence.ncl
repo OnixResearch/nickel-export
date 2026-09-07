@@ -18,8 +18,8 @@ let Contracts = import "contracts.ncl" in
     {
       role = "implementation-source",
       path = "crates/nickel-export-core/src/lib.rs",
-      blake3 = "2b32bf9d1ce84d6aa4ce3b61463fa152a5fab45863485e804b815fb9fcfcee24",
-      bytes = 91524,
+      blake3 = "cef801abe3ea0d65b7dae9c48fffdf4b29f6727b88713cbab39e3f7cb0b7d5b8",
+      bytes = 99456,
     },
     {
       role = "correspondence-vectors",

@@ -5,8 +5,7 @@
 
 extern crate alloc;
 
-#[cfg(feature = "serde")]
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -51,6 +50,9 @@ pub const MEBIBYTE_BYTES: u64 = 1_048_576;
 pub const MEBIBYTE_USIZE: usize = 1_048_576;
 /// Default maximum bytes for one source, dependency, output, or manifest artifact.
 pub const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 16 * MEBIBYTE_BYTES;
+const DEFAULT_INPUT_MEBIBYTES: u64 = 128;
+/// Default maximum combined bytes retained from declared input files.
+pub const DEFAULT_MAX_INPUT_BYTES: u64 = DEFAULT_INPUT_MEBIBYTES * MEBIBYTE_BYTES;
 /// Default maximum bytes for the resolved evaluator executable.
 pub const DEFAULT_MAX_EVALUATOR_BYTES: u64 = 128 * MEBIBYTE_BYTES;
 /// Default maximum bytes for evaluator stderr.
@@ -65,6 +67,8 @@ pub const DEFAULT_MAX_DIAGNOSTIC_BYTES: usize = MEBIBYTE_USIZE;
 pub const DEFAULT_EVALUATOR_TIMEOUT_MILLISECONDS: u64 = 30_000;
 /// Default evaluator polling interval in milliseconds.
 pub const DEFAULT_EVALUATOR_POLL_MILLISECONDS: u64 = 10;
+/// Default bound for owned process teardown.
+pub const DEFAULT_EVALUATOR_TEARDOWN_MILLISECONDS: u64 = 500;
 /// Non-claim carried by canonical receipts.
 pub const NON_CLAIM: &str = "Nickel export success proves only exact declared input and output identities under the recorded evaluator descriptor; the declared input identity is not proof of a complete dependency closure or a safe cache key; the receipt does not prove deployability, product-policy conformance, evaluator equivalence, build success, or release eligibility";
 
@@ -98,6 +102,8 @@ pub struct ResourceLimits {
     pub max_replay_runs: usize,
     /// Maximum bytes for one source, dependency, output, or manifest artifact.
     pub max_artifact_bytes: u64,
+    /// Maximum combined source and dependency bytes, or supplied artifact bytes.
+    pub max_input_bytes: u64,
     /// Maximum evaluator executable bytes.
     pub max_evaluator_bytes: u64,
     /// Maximum evaluator stderr bytes.
@@ -112,6 +118,8 @@ pub struct ResourceLimits {
     pub evaluator_timeout_milliseconds: u64,
     /// Evaluator status polling interval in milliseconds.
     pub evaluator_poll_milliseconds: u64,
+    /// Maximum time for owned process teardown in milliseconds.
+    pub evaluator_teardown_milliseconds: u64,
 }
 
 impl ResourceLimits {
@@ -120,6 +128,7 @@ impl ResourceLimits {
         max_artifacts: MAX_ARTIFACTS,
         max_replay_runs: DEFAULT_MAX_REPLAY_RUNS,
         max_artifact_bytes: DEFAULT_MAX_ARTIFACT_BYTES,
+        max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
         max_evaluator_bytes: DEFAULT_MAX_EVALUATOR_BYTES,
         max_stderr_bytes: DEFAULT_MAX_STDERR_BYTES,
         max_path_bytes: DEFAULT_MAX_PATH_BYTES,
@@ -127,7 +136,17 @@ impl ResourceLimits {
         max_diagnostic_bytes: DEFAULT_MAX_DIAGNOSTIC_BYTES,
         evaluator_timeout_milliseconds: DEFAULT_EVALUATOR_TIMEOUT_MILLISECONDS,
         evaluator_poll_milliseconds: DEFAULT_EVALUATOR_POLL_MILLISECONDS,
+        evaluator_teardown_milliseconds: DEFAULT_EVALUATOR_TEARDOWN_MILLISECONDS,
     };
+
+    /// Admit a byte increment without arithmetic overflow or budget overshoot.
+    #[must_use]
+    // r[impl nickel_export.improvements.aggregate]
+    pub fn checked_input_total(&self, retained: u64, additional: u64) -> Option<u64> {
+        retained
+            .checked_add(additional)
+            .filter(|total| *total <= self.max_input_bytes)
+    }
 }
 
 impl Default for ResourceLimits {
@@ -814,37 +833,81 @@ pub fn verify_manifest_integrity(wire: ExportManifest) -> Result<VerifiedManifes
 ///
 /// Rejects unknown paths, mismatched identities, mismatched lengths, and
 /// over-limit material.
+// r[impl nickel_export.improvements.index]
 pub fn verify_supplied_artifacts(
     manifest: &VerifiedManifest,
     materials: &[ArtifactMaterial<'_>],
 ) -> Result<usize, CoreError> {
+    // Measurements show index construction costs more for small manifests.
+    const DIRECT_SCAN_MAX_EXPORTS: usize = 16;
+    if manifest.exports.len() <= DIRECT_SCAN_MAX_EXPORTS {
+        for material in materials {
+            let actual = artifact_identity(material)?;
+            let expected = manifest
+                .exports
+                .iter()
+                .flat_map(|export| {
+                    core::iter::once(&export.source)
+                        .chain(export.dependencies.iter())
+                        .chain(core::iter::once(&export.output))
+                })
+                .filter(|artifact| artifact.path == material.path);
+            verify_expected_artifacts(material.path, &actual, expected)?;
+        }
+        return Ok(materials.len());
+    }
+    // Retain every identity for a repeated path. A last-write-wins index would
+    // conceal conflicting declarations in different exports.
+    let mut index = BTreeMap::<&str, Vec<&ArtifactIdentity>>::new();
+    for export in &manifest.exports {
+        for artifact in core::iter::once(&export.source)
+            .chain(export.dependencies.iter())
+            .chain(core::iter::once(&export.output))
+        {
+            index.entry(&artifact.path).or_default().push(artifact);
+        }
+    }
     for material in materials {
         let actual = artifact_identity(material)?;
-        let mut matched = false;
-        for export in &manifest.exports {
-            let artifacts = core::iter::once(&export.source)
-                .chain(export.dependencies.iter())
-                .chain(core::iter::once(&export.output));
-            for expected in artifacts.filter(|artifact| artifact.path == material.path) {
-                matched = true;
-                if expected != &actual {
-                    return Err(CoreError::MaterialMismatch(vec![error(
-                        "artifact-identity-mismatch",
-                        material.path,
-                        "supplied artifact bytes differ from the manifest",
-                    )]));
-                }
-            }
-        }
-        if !matched {
+        let Some(expected) = index.get(material.path) else {
             return Err(CoreError::MaterialMismatch(vec![error(
                 "unknown-artifact",
                 material.path,
                 "supplied artifact path is absent from the manifest",
             )]));
-        }
+        };
+        verify_expected_artifacts(material.path, &actual, expected.iter().copied())?;
     }
     Ok(materials.len())
+}
+
+fn verify_expected_artifacts<'a>(
+    path: &str,
+    actual: &ArtifactIdentity,
+    mut expected: impl Iterator<Item = &'a ArtifactIdentity>,
+) -> Result<(), CoreError> {
+    let canonical = expected.next().ok_or_else(|| {
+        CoreError::MaterialMismatch(vec![error(
+            "unknown-artifact",
+            path,
+            "supplied artifact path is absent from the manifest",
+        )])
+    })?;
+    if expected.any(|expected| expected != canonical) {
+        return Err(CoreError::MaterialMismatch(vec![error(
+            "artifact-identity-conflict",
+            path,
+            "manifest declares conflicting identities for one artifact path",
+        )]));
+    }
+    if canonical != actual {
+        return Err(CoreError::MaterialMismatch(vec![error(
+            "artifact-identity-mismatch",
+            path,
+            "supplied artifact bytes differ from the manifest",
+        )]));
+    }
+    Ok(())
 }
 
 /// Build a deterministic manifest while prohibiting mixed evaluators.
@@ -1677,6 +1740,84 @@ mod tests {
         }
     }
 
+    fn scan_oracle(
+        manifest: &VerifiedManifest,
+        materials: &[ArtifactMaterial<'_>],
+    ) -> Result<usize, CoreError> {
+        for material in materials {
+            let actual = artifact_identity(material)?;
+            let mut matched = false;
+            for export in &manifest.exports {
+                for expected in core::iter::once(&export.source)
+                    .chain(export.dependencies.iter())
+                    .chain(core::iter::once(&export.output))
+                    .filter(|artifact| artifact.path == material.path)
+                {
+                    matched = true;
+                    if expected != &actual {
+                        return Err(CoreError::Serialization);
+                    }
+                }
+            }
+            if !matched {
+                return Err(CoreError::Serialization);
+            }
+        }
+        Ok(materials.len())
+    }
+
+    #[test]
+    #[ignore = "explicit release-mode measurement, not a timing acceptance test"]
+    #[allow(
+        clippy::unwrap_used,
+        reason = "benchmark owner: invalid fixtures or failed parity must stop the measurement"
+    )]
+    fn measure_manifest_index() {
+        const SMALL_EXPORTS: usize = 16;
+        const MEDIUM_EXPORTS: usize = 256;
+        const LARGE_EXPORTS: usize = 1_024;
+        const REPETITIONS: usize = 32;
+        let evaluator = evaluator("nickel-cli");
+        for size in [1, SMALL_EXPORTS, MEDIUM_EXPORTS, LARGE_EXPORTS] {
+            let paths: Vec<_> = (0..size).map(|index| format!("out/{index}.json")).collect();
+            let receipts: Vec<_> = paths
+                .iter()
+                .map(|path| receipt_for(path, &evaluator))
+                .collect();
+            let manifest = build_manifest(&receipts).unwrap();
+            let materials: Vec<_> = paths
+                .iter()
+                .map(|path| ArtifactMaterial {
+                    path,
+                    bytes: OUTPUT,
+                })
+                .collect();
+            assert_eq!(
+                scan_oracle(&manifest, &materials).unwrap(),
+                verify_supplied_artifacts(&manifest, &materials).unwrap()
+            );
+            let bad = [ArtifactMaterial {
+                path: &paths[0],
+                bytes: b"wrong",
+            }];
+            assert!(scan_oracle(&manifest, &bad).is_err());
+            assert!(verify_supplied_artifacts(&manifest, &bad).is_err());
+            let started = std::time::Instant::now();
+            for _ in 0..REPETITIONS {
+                std::hint::black_box(scan_oracle(&manifest, &materials).unwrap());
+            }
+            let scan_ns = started.elapsed().as_nanos();
+            let started = std::time::Instant::now();
+            for _ in 0..REPETITIONS {
+                std::hint::black_box(verify_supplied_artifacts(&manifest, &materials).unwrap());
+            }
+            let index_ns = started.elapsed().as_nanos();
+            std::println!(
+                "index,exports={size},runs={REPETITIONS},scan_ns={scan_ns},index_ns={index_ns}"
+            );
+        }
+    }
+
     #[test]
     fn exact_inputs_produce_stable_receipts_and_manifests() {
         let evaluator = evaluator("nickel-cli");
@@ -2336,6 +2477,52 @@ mod tests {
     }
 
     #[test]
+    fn supplied_artifact_verification_rejects_conflicting_path_identity() {
+        let first = custom_receipt(SOURCE, DEPENDENCY, OUTPUT);
+        let second = custom_receipt_with_destination(
+            b"conflicting source",
+            DEPENDENCY,
+            b"other-output",
+            "generated/other-output.json",
+        );
+        let source_path = "config/source.ncl";
+        let manifest = build_manifest(&[first, second]).unwrap_or_else(panic_for_test);
+
+        let supplied = [ArtifactMaterial {
+            path: source_path,
+            bytes: SOURCE,
+        }];
+        assert!(verify_supplied_artifacts(&manifest, &supplied).is_err());
+    }
+
+    #[test]
+    fn indexed_verification_matches_scan_for_large_positive_and_negative_manifests() {
+        const EXPORT_COUNT: usize = 32;
+        let paths: Vec<_> = (0..EXPORT_COUNT)
+            .map(|index| format!("generated/{index}.json"))
+            .collect();
+        let mut receipts: Vec<_> = paths
+            .iter()
+            .map(|path| custom_receipt_with_destination(SOURCE, DEPENDENCY, OUTPUT, path))
+            .collect();
+        let materials = [ArtifactMaterial {
+            path: "config/source.ncl",
+            bytes: SOURCE,
+        }];
+        let manifest = build_manifest(&receipts).unwrap_or_else(panic_for_test);
+        assert_eq!(verify_supplied_artifacts(&manifest, &materials), Ok(1));
+        receipts[0] = custom_receipt_with_destination(b"different", DEPENDENCY, OUTPUT, &paths[0]);
+        let conflicting = build_manifest(&receipts).unwrap_or_else(panic_for_test);
+        assert!(verify_supplied_artifacts(&conflicting, &materials).is_err());
+        assert!(scan_oracle(&conflicting, &materials).is_err());
+        let unknown = [ArtifactMaterial {
+            path: "absent",
+            bytes: SOURCE,
+        }];
+        assert!(verify_supplied_artifacts(&manifest, &unknown).is_err());
+    }
+
+    #[test]
     fn stale_manifest_is_rejected() {
         let evaluator = evaluator("nickel-cli");
         let receipt = receipt_for("generated/config.json", &evaluator);
@@ -2347,7 +2534,16 @@ mod tests {
     }
 
     fn custom_receipt(source: &[u8], dependency: &[u8], output: &[u8]) -> AdmittedReceipt {
-        let request = request("generated/config.json");
+        custom_receipt_with_destination(source, dependency, output, "generated/config.json")
+    }
+
+    fn custom_receipt_with_destination(
+        source: &[u8],
+        dependency: &[u8],
+        output: &[u8],
+        destination: &str,
+    ) -> AdmittedReceipt {
+        let request = request(destination);
         let evaluator = evaluator("nickel-cli");
         let observation = EvaluationObservation {
             request: &request,
@@ -2360,7 +2556,7 @@ mod tests {
                 bytes: dependency,
             }],
             output: ArtifactMaterial {
-                path: "generated/config.json",
+                path: destination,
                 bytes: output,
             },
             evaluator: &evaluator,

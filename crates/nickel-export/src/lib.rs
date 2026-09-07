@@ -1,15 +1,22 @@
 //! Thin std shell for deterministic Nickel exports.
 
+#[cfg(test)]
+mod improvements_tests;
+
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
 
+use bounded_exec::{
+    CommandSpec, Completion, Disposition, EnvironmentMode, ExecutionLimits, Input, OutcomePolicy,
+    OverflowedStreams, RunError as BoundedRunError, RunRequest, TerminationScope,
+};
 use serde::{Deserialize, Serialize};
 
 use nickel_export_core::{
@@ -250,9 +257,9 @@ struct EvaluationPlan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CapturedFile {
-    path: String,
-    bytes: Vec<u8>,
+struct CapturedFile<'a> {
+    path: &'a str,
+    bytes: &'a [u8],
 }
 
 #[derive(Debug)]
@@ -322,6 +329,7 @@ fn resource_limits() -> Result<ResourceLimits, ShellError> {
     if limits.max_artifacts == 0
         || limits.max_replay_runs == 0
         || limits.max_artifact_bytes == 0
+        || limits.max_input_bytes == 0
         || limits.max_evaluator_bytes == 0
         || limits.max_stderr_bytes == 0
         || limits.max_path_bytes == 0
@@ -329,6 +337,7 @@ fn resource_limits() -> Result<ResourceLimits, ShellError> {
         || limits.max_diagnostic_bytes == 0
         || limits.evaluator_timeout_milliseconds == 0
         || limits.evaluator_poll_milliseconds == 0
+        || limits.evaluator_teardown_milliseconds == 0
     {
         return Err(ShellError::new(
             "resource-limits",
@@ -385,10 +394,11 @@ fn verify_manifest_artifact_files(
         );
         paths.insert(export.output.path.clone());
     }
+    let mut retained = 0;
     let bytes = paths
         .iter()
         .map(|path| {
-            read_root_file(root, path, "verify-artifact", limits.max_artifact_bytes)
+            read_budgeted_input(root, path, "verify-artifact", limits, &mut retained)
                 .map(|bytes| (path.clone(), bytes))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -509,17 +519,14 @@ fn load_export(options: &CliOptions, limits: &ResourceLimits) -> Result<LoadedEx
     let request = normalize_request(&request)
         .map_err(|error| ShellError::new("validate-spec", error.to_string()))?;
     validate_shell_contract(&request)?;
-    let source_bytes = read_root_file(
-        &root,
-        &request.source,
-        "read-source",
-        limits.max_artifact_bytes,
-    )?;
+    let mut retained = 0;
+    let source_bytes =
+        read_budgeted_input(&root, &request.source, "read-source", limits, &mut retained)?;
     let dependency_bytes = request
         .dependencies
         .iter()
         .map(|path| {
-            read_root_file(&root, path, "read-dependency", limits.max_artifact_bytes)
+            read_budgeted_input(&root, path, "read-dependency", limits, &mut retained)
                 .map(|bytes| (path.clone(), bytes))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -549,7 +556,7 @@ fn evaluate_export(
     let artifact_identity =
         evaluator_artifact_identity(&evaluator_program, limits.max_evaluator_bytes)?;
     let plan = evaluation_plan(&evaluator_program, &canonical_plan, &snapshot.root);
-    verify_evaluator_version(&plan.program, &options.evaluator_version)?;
+    verify_evaluator_version(&plan.program, &options.evaluator_version, limits)?;
     verify_evaluator_artifact(
         &evaluator_program,
         &artifact_identity,
@@ -602,7 +609,7 @@ fn run_bound_evaluator_once(
         artifact_identity,
         limits.max_evaluator_bytes,
     )?;
-    result.map(|output| output.stdout)
+    result
 }
 
 fn parse_args(args: &[String]) -> Result<CliOptions, ShellError> {
@@ -775,11 +782,11 @@ fn validate_shell_contract(request: &ExportRequest) -> Result<(), ShellError> {
 }
 
 // r[impl nickel_export.shell.captured_input_evaluation]
-fn capture_files(
-    request: &ExportRequest,
-    source_bytes: &[u8],
-    dependency_bytes: &[(String, Vec<u8>)],
-) -> Result<Vec<CapturedFile>, ShellError> {
+fn capture_files<'a>(
+    request: &'a ExportRequest,
+    source_bytes: &'a [u8],
+    dependency_bytes: &'a [(String, Vec<u8>)],
+) -> Result<Vec<CapturedFile<'a>>, ShellError> {
     if request.dependencies.len() != dependency_bytes.len() {
         return Err(ShellError::new(
             "capture-inputs",
@@ -788,8 +795,8 @@ fn capture_files(
     }
     let mut captured = Vec::with_capacity(request.dependencies.len() + 1);
     captured.push(CapturedFile {
-        path: request.source.clone(),
-        bytes: source_bytes.to_vec(),
+        path: &request.source,
+        bytes: source_bytes,
     });
     for (declared, (path, bytes)) in request.dependencies.iter().zip(dependency_bytes) {
         if declared != path {
@@ -798,17 +805,14 @@ fn capture_files(
                 format!("captured dependency `{path}` differs from declared `{declared}`"),
             ));
         }
-        captured.push(CapturedFile {
-            path: path.clone(),
-            bytes: bytes.clone(),
-        });
+        captured.push(CapturedFile { path, bytes });
     }
     Ok(captured)
 }
 
 fn materialize_snapshot(
     request: &ExportRequest,
-    captured: &[CapturedFile],
+    captured: &[CapturedFile<'_>],
 ) -> Result<EvaluationSnapshot, ShellError> {
     let snapshot = EvaluationSnapshot {
         root: create_snapshot_root()?,
@@ -851,8 +855,8 @@ fn create_snapshot_root() -> Result<PathBuf, ShellError> {
     ))
 }
 
-fn write_snapshot_file(root: &Path, file: &CapturedFile) -> Result<(), ShellError> {
-    let destination = root.join(&file.path);
+fn write_snapshot_file(root: &Path, file: &CapturedFile<'_>) -> Result<(), ShellError> {
+    let destination = root.join(file.path);
     let Some(parent) = destination.parent() else {
         return Err(ShellError::new(
             "snapshot-write",
@@ -862,7 +866,7 @@ fn write_snapshot_file(root: &Path, file: &CapturedFile) -> Result<(), ShellErro
     fs::create_dir_all(parent).map_err(|error| {
         ShellError::new("snapshot-write", format!("{}: {error}", parent.display()))
     })?;
-    fs::write(&destination, &file.bytes).map_err(|error| {
+    fs::write(&destination, file.bytes).map_err(|error| {
         ShellError::new(
             "snapshot-write",
             format!("{}: {error}", destination.display()),
@@ -1007,25 +1011,29 @@ where
             "replay profile violates its typed run-count bounds",
         ));
     }
-    let mut attempts = Vec::with_capacity(profile.requested_runs);
-    for _ in 0..profile.requested_runs {
-        match execute_run() {
-            Ok(bytes) => attempts.push(ReplayAttempt::Success(bytes)),
-            Err(stage) => {
-                attempts.push(ReplayAttempt::Failure(stage));
-                break;
-            }
+    let mut stopped = false;
+    let attempts = (0..profile.requested_runs).map_while(|_| {
+        if stopped {
+            return None;
         }
-    }
-    assess_replay(
+        Some(match execute_run() {
+            Ok(bytes) => ReplayAttempt::Success(bytes),
+            Err(stage) => {
+                stopped = true;
+                ReplayAttempt::Failure(stage)
+            }
+        })
+    });
+    assess_replay_stream(
         profile,
         plan_identity,
         evaluator_artifact_identity,
         resource_profile_identity,
-        &attempts,
+        attempts,
     )
 }
 
+#[cfg(test)]
 fn assess_replay(
     profile: ReplayProfile,
     plan_identity: &str,
@@ -1033,26 +1041,42 @@ fn assess_replay(
     resource_profile_identity: &str,
     attempts: &[ReplayAttempt],
 ) -> Result<ReplayAssessment, ShellError> {
-    if attempts.is_empty() || attempts.len() > profile.requested_runs {
-        return Err(ShellError::new(
-            "replay-assessment",
-            "replay attempts violate the selected profile",
-        ));
-    }
-    let mut outcomes = Vec::with_capacity(attempts.len());
+    assess_replay_stream(
+        profile,
+        plan_identity,
+        evaluator_artifact_identity,
+        resource_profile_identity,
+        attempts.iter().cloned(),
+    )
+}
+
+// Pure sequential assessment consumes one output at a time.
+// r[impl nickel_export.improvements.memory]
+fn assess_replay_stream(
+    profile: ReplayProfile,
+    plan_identity: &str,
+    evaluator_artifact_identity: &str,
+    resource_profile_identity: &str,
+    attempts: impl IntoIterator<Item = ReplayAttempt>,
+) -> Result<ReplayAssessment, ShellError> {
+    let mut outcomes = Vec::new();
     let mut reference_output: Option<Vec<u8>> = None;
     let mut saw_failure = false;
     let mut saw_divergence = false;
-    for (index, attempt) in attempts.iter().enumerate() {
+    for (index, attempt) in attempts.into_iter().enumerate() {
+        if index >= profile.requested_runs {
+            return Err(ShellError::new(
+                "replay-assessment",
+                "too many replay attempts",
+            ));
+        }
         match attempt {
             ReplayAttempt::Success(bytes) => {
                 if reference_output
                     .as_ref()
-                    .is_some_and(|reference| reference != bytes)
+                    .is_some_and(|reference| reference != &bytes)
                 {
                     saw_divergence = true;
-                } else if reference_output.is_none() {
-                    reference_output = Some(bytes.clone());
                 }
                 let output_bytes = u64::try_from(bytes.len()).map_err(|_| {
                     ShellError::new("replay-assessment", "output byte length overflowed")
@@ -1060,10 +1084,13 @@ fn assess_replay(
                 outcomes.push(ReplayRunOutcome {
                     run: index + 1,
                     status: ReplayRunStatus::Success,
-                    output_identity: blake3_identity(bytes),
+                    output_identity: blake3_identity(&bytes),
                     output_bytes,
                     failure_stage: String::new(),
                 });
+                if reference_output.is_none() {
+                    reference_output = Some(bytes);
+                }
             }
             ReplayAttempt::Failure(stage) => {
                 saw_failure = true;
@@ -1072,12 +1099,18 @@ fn assess_replay(
                     status: ReplayRunStatus::Failure,
                     output_identity: String::new(),
                     output_bytes: 0,
-                    failure_stage: (*stage).to_string(),
+                    failure_stage: stage.to_string(),
                 });
             }
         }
     }
-    let verdict = if saw_failure || attempts.len() != profile.requested_runs {
+    if outcomes.is_empty() {
+        return Err(ShellError::new(
+            "replay-assessment",
+            "replay attempts are empty",
+        ));
+    }
+    let verdict = if saw_failure || outcomes.len() != profile.requested_runs {
         ReplayVerdict::Failure
     } else if saw_divergence {
         ReplayVerdict::Divergence
@@ -1170,8 +1203,44 @@ fn append_replay_bytes(output: &mut Vec<u8>, bytes: &[u8]) -> Result<(), ShellEr
 }
 
 fn evaluator_artifact_identity(program: &Path, max_bytes: u64) -> Result<String, ShellError> {
-    let bytes = read_file_bounded(program, "evaluator-artifact", max_bytes)?;
-    Ok(blake3_identity(&bytes))
+    let mut executable = File::open(program)
+        .map_err(|error| ShellError::new("evaluator-artifact", error.to_string()))?;
+    let metadata = executable
+        .metadata()
+        .map_err(|error| ShellError::new("evaluator-artifact", error.to_string()))?;
+    if metadata.len() > max_bytes {
+        return Err(ShellError::new(
+            "evaluator-artifact",
+            format!("{} exceeds the configured byte bound", program.display()),
+        ));
+    }
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; STREAM_BUFFER_BYTES];
+    let mut observed_bytes = 0_u64;
+    loop {
+        let read = executable
+            .read(&mut buffer)
+            .map_err(|error| ShellError::new("evaluator-artifact", error.to_string()))?;
+        if read == 0 {
+            break;
+        }
+        let read_u64 = u64::try_from(read)
+            .map_err(|_| ShellError::new("evaluator-artifact", "stream byte length overflowed"))?;
+        observed_bytes = observed_bytes.checked_add(read_u64).ok_or_else(|| {
+            ShellError::new("evaluator-artifact", "stream byte length overflowed")
+        })?;
+        if observed_bytes > max_bytes {
+            return Err(ShellError::new(
+                "evaluator-artifact",
+                format!(
+                    "{} changed beyond the configured byte bound",
+                    program.display()
+                ),
+            ));
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("b3:{}", hasher.finalize().to_hex()))
 }
 
 fn verify_evaluator_artifact(
@@ -1190,143 +1259,226 @@ fn verify_evaluator_artifact(
     }
 }
 
-fn verify_evaluator_version(program: &Path, expected: &str) -> Result<(), ShellError> {
-    let output = evaluator_command(program)
-        .arg("--version")
-        .output()
-        .map_err(|error| ShellError::new("evaluator-version", error.to_string()))?;
-    if !output.status.success() {
-        return Err(ShellError::new(
-            "evaluator-version",
-            format!("version command failed with status {}", output.status),
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let expected_token = expected
+fn verify_evaluator_version(
+    program: &Path,
+    expected: &str,
+    limits: &ResourceLimits,
+) -> Result<(), ShellError> {
+    let request = command_request(
+        program,
+        &[OsString::from("--version")],
+        program.parent().ok_or_else(|| {
+            ShellError::new(
+                "evaluator-version",
+                format!("{} has no parent", program.display()),
+            )
+        })?,
+        limits,
+    )?;
+    let output = bounded_exec::run(request)
+        .map_err(|error| ShellError::new("evaluator-version", format_bounded_exec_error(error)))?;
+    let exit_codes = expected
         .strip_prefix(NICKEL_PACKAGE_VERSION_PREFIX)
         .unwrap_or(expected);
-    if stdout
+    if output.completion == Completion::TimedOut {
+        return Err(ShellError::new(
+            "evaluator-version",
+            "version command exceeded the configured deadline",
+        ));
+    }
+    if !matches!(output.disposition, Disposition::Succeeded) {
+        let stage = output_disposition_stage(output.disposition).unwrap_or("evaluator-version");
+        let summary = output_footprint_summary(&output);
+        return Err(ShellError::new(
+            stage,
+            format!("version command was rejected: {summary}"),
+        ));
+    }
+    let observed_stdout = String::from_utf8_lossy(&output.stdout.bytes);
+    if output.stdout.observed_bytes == 0 {
+        return Err(ShellError::new(
+            "evaluator-version",
+            "version command produced no output",
+        ));
+    }
+    if observed_stdout
         .split_whitespace()
-        .any(|token| token == expected_token)
+        .any(|token| token == exit_codes)
     {
         Ok(())
     } else {
         Err(ShellError::new(
             "evaluator-version",
-            format!(
-                "evaluator version output `{}` does not contain expected token `{expected_token}`",
-                stdout.trim()
-            ),
+            format!("evaluator version output did not include expected token `{exit_codes}`",),
         ))
     }
-}
-
-fn evaluator_command(program: &Path) -> Command {
-    let mut command = Command::new(program);
-    command.env_clear();
-    command
 }
 
 // r[impl nickel_export.shell.bounded_evaluation]
-fn run_evaluator(plan: &EvaluationPlan, limits: &ResourceLimits) -> Result<Output, ShellError> {
-    let mut child = evaluator_command(&plan.program)
-        .args(&plan.args)
-        .current_dir(&plan.current_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| ShellError::new("evaluator-spawn", error.to_string()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| ShellError::new("evaluator-stdout", "stdout pipe is unavailable"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| ShellError::new("evaluator-stderr", "stderr pipe is unavailable"))?;
-    let max_stdout = limits.max_artifact_bytes;
-    let max_stderr = limits.max_stderr_bytes;
-    let stdout_reader =
-        std::thread::spawn(move || read_stream_bounded(stdout, max_stdout, "evaluator-stdout"));
-    let stderr_reader =
-        std::thread::spawn(move || read_stream_bounded(stderr, max_stderr, "evaluator-stderr"));
-    let timeout = Duration::from_millis(limits.evaluator_timeout_milliseconds);
-    let poll = Duration::from_millis(limits.evaluator_poll_milliseconds);
-    let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| ShellError::new("evaluator-wait", error.to_string()))?
-        {
-            break status;
+fn run_evaluator(plan: &EvaluationPlan, limits: &ResourceLimits) -> Result<Vec<u8>, ShellError> {
+    let request = command_request(&plan.program, &plan.args, &plan.current_dir, limits)?;
+    let output = bounded_exec::run(request)
+        .map_err(|error| ShellError::new("evaluator-spawn", format_bounded_exec_error(error)))?;
+
+    match output.disposition {
+        Disposition::Succeeded => {
+            if output.exit_code == Some(0) {
+                Ok(output.stdout.bytes)
+            } else {
+                let reason = output_footprint_summary(&output);
+                Err(ShellError::new(
+                    "evaluator-failure",
+                    format!("evaluation command was rejected by outcome policy: {reason}"),
+                ))
+            }
         }
-        if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = join_bounded_reader(stdout_reader, "evaluator-stdout");
-            let _ = join_bounded_reader(stderr_reader, "evaluator-stderr");
-            return Err(ShellError::new(
-                "evaluator-timeout",
-                "evaluator exceeded the configured deadline",
-            ));
+        Disposition::OutputLimitExceeded(OverflowedStreams::Stdout) => Err(ShellError::new(
+            "evaluator-stdout",
+            format!(
+                "evaluation output exceeded stream bound: {}",
+                output_footprint_summary(&output)
+            ),
+        )),
+        Disposition::OutputLimitExceeded(OverflowedStreams::Stderr) => Err(ShellError::new(
+            "evaluator-stderr",
+            format!(
+                "evaluation error output exceeded stream bound: {}",
+                output_footprint_summary(&output)
+            ),
+        )),
+        Disposition::OutputLimitExceeded(OverflowedStreams::Both) => Err(ShellError::new(
+            "evaluator-stdout",
+            format!(
+                "evaluation streams exceeded bounds: {}",
+                output_footprint_summary(&output)
+            ),
+        )),
+        Disposition::TimedOut => Err(ShellError::new(
+            "evaluator-timeout",
+            "evaluation command exceeded the configured deadline",
+        )),
+        Disposition::Cancelled => Err(ShellError::new(
+            "evaluator-cancelled",
+            "evaluation command was cancelled",
+        )),
+        Disposition::ExitFailed => {
+            let reason = output_footprint_summary(&output);
+            Err(ShellError::new(
+                "evaluator-failure",
+                format!("evaluation command failed to satisfy policy: {reason}"),
+            ))
         }
-        std::thread::sleep(poll);
+    }
+}
+
+fn output_disposition_stage(disposition: Disposition) -> Option<&'static str> {
+    match disposition {
+        Disposition::OutputLimitExceeded(OverflowedStreams::Stdout | OverflowedStreams::Both) => {
+            Some("evaluator-stdout")
+        }
+        Disposition::OutputLimitExceeded(OverflowedStreams::Stderr) => Some("evaluator-stderr"),
+        Disposition::TimedOut => Some("evaluator-timeout"),
+        Disposition::ExitFailed => Some("evaluator-failure"),
+        Disposition::Cancelled => Some("evaluator-cancelled"),
+        Disposition::Succeeded => None,
+    }
+}
+
+fn output_footprint_summary(output: &bounded_exec::ExecutionOutput) -> String {
+    let stdout = stream_footprint("stdout", &output.stdout);
+    let stderr = stream_footprint("stderr", &output.stderr);
+    let completion = match output.completion {
+        Completion::TimedOut => "timed_out",
+        Completion::Cancelled => "cancelled",
+        Completion::Exited => "exited",
     };
-    let stdout = join_bounded_reader(stdout_reader, "evaluator-stdout")?;
-    let stderr = join_bounded_reader(stderr_reader, "evaluator-stderr")?;
-    let output = Output {
-        status,
-        stdout,
-        stderr,
-    };
-    if output.status.success() {
-        Ok(output)
+    let exit_code = output
+        .exit_code
+        .map_or_else(|| String::from("none"), |code| code.to_string());
+    format!("completion={completion}; exit_code={exit_code}; {stdout}; {stderr}")
+}
+
+fn stream_footprint(label: &str, stream: &bounded_exec::CapturedOutput) -> String {
+    let truncated = if stream.truncated {
+        "truncated"
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(ShellError::new(
-            "evaluator-failure",
-            format!("status {}: {stderr}", output.status),
-        ))
-    }
+        "not-truncated"
+    };
+    format!(
+        "{label}: observed={}; retained={}; {}",
+        stream.observed_bytes,
+        stream.bytes.len(),
+        truncated
+    )
 }
 
-fn read_stream_bounded(
-    mut reader: impl Read,
-    max_bytes: u64,
-    stage: &'static str,
-) -> Result<Vec<u8>, ShellError> {
-    let mut output = Vec::new();
-    let mut buffer = [0_u8; STREAM_BUFFER_BYTES];
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|error| ShellError::new(stage, error.to_string()))?;
-        if read == 0 {
-            return Ok(output);
-        }
-        let next = output
-            .len()
-            .checked_add(read)
-            .ok_or_else(|| ShellError::new(stage, "stream byte length overflowed"))?;
-        let next_u64 = u64::try_from(next)
-            .map_err(|_| ShellError::new(stage, "stream byte length overflowed"))?;
-        if next_u64 > max_bytes {
-            return Err(ShellError::new(
-                stage,
-                "stream exceeds the configured byte bound",
-            ));
-        }
-        output.extend_from_slice(&buffer[..read]);
-    }
+fn command_request(
+    program: &Path,
+    args: &[OsString],
+    current_dir: &Path,
+    limits: &ResourceLimits,
+) -> Result<RunRequest, ShellError> {
+    let stdout_max_bytes = usize::try_from(limits.max_artifact_bytes)
+        .map_err(|_| ShellError::new("resource-limits", "max_artifact_bytes exceeds usize"))?;
+    let stderr_max_bytes = usize::try_from(limits.max_stderr_bytes)
+        .map_err(|_| ShellError::new("resource-limits", "max_stderr_bytes exceeds usize"))?;
+    let stdin_max_bytes = usize::try_from(limits.max_input_bytes)
+        .map_err(|_| ShellError::new("resource-limits", "max_input_bytes exceeds usize"))?;
+    let teardown_timeout_ms = limits.evaluator_teardown_milliseconds;
+    let request = RunRequest {
+        command: CommandSpec {
+            program: program.to_path_buf(),
+            args: args.to_vec(),
+            current_dir: current_dir.to_path_buf(),
+            environment_mode: EnvironmentMode::Clear,
+            environment: Vec::new(),
+            input: Input::Null,
+        },
+        limits: ExecutionLimits {
+            timeout_ms: limits.evaluator_timeout_milliseconds,
+            stdin_max_bytes,
+            stdout_max_bytes,
+            stderr_max_bytes,
+            poll_interval_ms: limits.evaluator_poll_milliseconds,
+            teardown_timeout_ms,
+        },
+        termination_scope: TerminationScope::ProcessGroup,
+        outcome_policy: OutcomePolicy::new(vec![0], true, true)
+            .map_err(|error| ShellError::new("evaluator-policy", format!("{error:?}")))?,
+    };
+    Ok(request)
 }
 
-fn join_bounded_reader(
-    handle: std::thread::JoinHandle<Result<Vec<u8>, ShellError>>,
-    stage: &'static str,
-) -> Result<Vec<u8>, ShellError> {
-    handle
-        .join()
-        .map_err(|_| ShellError::new(stage, "stream reader thread failed"))?
+fn format_bounded_exec_error(error: BoundedRunError) -> String {
+    match error {
+        BoundedRunError::InvalidLimits(error) => format!("invalid execution limits: {error:?}"),
+        BoundedRunError::EmptyProgram => String::from("program path is empty"),
+        BoundedRunError::ProgramNotAbsolute => String::from("program path is not absolute"),
+        BoundedRunError::EmptyCurrentDirectory => String::from("working directory is empty"),
+        BoundedRunError::CurrentDirectoryNotAbsolute => {
+            String::from("working directory is not absolute")
+        }
+        BoundedRunError::DuplicateEnvironmentName => {
+            String::from("explicit environment variable name is duplicated")
+        }
+        BoundedRunError::InputLimitExceeded => String::from("stdin exceeds configured byte bound"),
+        BoundedRunError::MissingPipe(worker) => format!("{worker:?} pipe is unavailable"),
+        BoundedRunError::Io { operation, error } => {
+            format!("{operation:?} failed: {error}")
+        }
+        BoundedRunError::CaptureCountOverflow(worker) => {
+            format!("{worker:?} capture counter overflowed")
+        }
+        BoundedRunError::WorkerDisconnected(worker) => {
+            format!("{worker:?} terminated without report")
+        }
+        BoundedRunError::WorkerPanicked(worker) => format!("{worker:?} worker panicked"),
+        BoundedRunError::WorkerTeardownTimedOut(worker) => {
+            format!("{worker:?} did not finish teardown")
+        }
+        BoundedRunError::ChildTeardownTimedOut => String::from("child did not terminate"),
+        BoundedRunError::ProcessIdentifierOverflow => String::from("process identifier overflowed"),
+    }
 }
 
 /// Atomically publish a pointer to an already complete generation directory.
@@ -1469,6 +1621,29 @@ fn read_file_bounded(
             ),
         ));
     }
+    Ok(bytes)
+}
+
+fn read_budgeted_input(
+    root: &Path,
+    path: &str,
+    stage: &'static str,
+    limits: &ResourceLimits,
+    retained: &mut u64,
+) -> Result<Vec<u8>, ShellError> {
+    let remaining = limits
+        .max_input_bytes
+        .checked_sub(*retained)
+        .ok_or_else(|| ShellError::new("resource-limits", "input budget is exhausted"))?;
+    let bytes = read_root_file(root, path, stage, remaining.min(limits.max_artifact_bytes))?;
+    let size = u64::try_from(bytes.len())
+        .map_err(|_| ShellError::new(stage, "input length overflowed"))?;
+    *retained = limits.checked_input_total(*retained, size).ok_or_else(|| {
+        ShellError::new(
+            "resource-limits",
+            "declared input bytes exceed the configured maximum total",
+        )
+    })?;
     Ok(bytes)
 }
 
@@ -2097,11 +2272,7 @@ mod tests {
             "b3:plan",
             "b3:evaluator",
             "b3:resources",
-            || {
-                run_evaluator(&alternating, &limits)
-                    .map(|output| output.stdout)
-                    .map_err(|error| error.stage)
-            },
+            || run_evaluator(&alternating, &limits).map_err(|error| error.stage),
         )
         .unwrap_or_else(|error| panic_for_test(&error));
         assert_eq!(divergent.report.verdict, ReplayVerdict::Divergence);
@@ -2120,11 +2291,7 @@ mod tests {
             "b3:plan",
             "b3:evaluator",
             "b3:resources",
-            || {
-                run_evaluator(&failing, &limits)
-                    .map(|output| output.stdout)
-                    .map_err(|error| error.stage)
-            },
+            || run_evaluator(&failing, &limits).map_err(|error| error.stage),
         )
         .unwrap_or_else(|error| panic_for_test(&error));
         assert_eq!(failed.report.verdict, ReplayVerdict::Failure);
@@ -2195,7 +2362,8 @@ mod tests {
 
     #[test]
     fn evaluator_command_has_no_ambient_environment() {
-        let command = evaluator_command(Path::new("/bin/true"));
+        let mut command = std::process::Command::new(Path::new("/bin/true"));
+        command.env_clear();
         assert_eq!(command.get_envs().count(), 0);
     }
 
@@ -2233,18 +2401,26 @@ mod tests {
 
         let limits = resource_limits().unwrap_or_else(|error| panic_for_test(&error));
         assert_eq!(limits, ResourceLimits::DEFAULT);
-        let exact = read_stream_bounded(
-            std::io::Cursor::new(b"four"),
-            TEST_STREAM_BOUND,
-            "test-stream",
-        );
-        let oversized = read_stream_bounded(
-            std::io::Cursor::new(b"oversized"),
-            TEST_STREAM_BOUND,
-            "test-stream",
-        );
-        assert!(exact.is_ok());
-        assert!(oversized.is_err());
+
+        let stream_exact = std::env::temp_dir().join(format!(
+            "nickel-export-stream-test-{}-exact",
+            std::process::id()
+        ));
+        let stream_oversized = std::env::temp_dir().join(format!(
+            "nickel-export-stream-test-{}-oversized",
+            std::process::id()
+        ));
+        fs::write(&stream_exact, b"four")
+            .unwrap_or_else(|error| panic_for_test(&ShellError::new("test", error.to_string())));
+        fs::write(&stream_oversized, b"oversized")
+            .unwrap_or_else(|error| panic_for_test(&ShellError::new("test", error.to_string())));
+
+        assert!(read_file_bounded(&stream_exact, "test-stream", TEST_STREAM_BOUND).is_ok());
+        assert!(read_file_bounded(&stream_oversized, "test-stream", TEST_STREAM_BOUND).is_err());
+        fs::remove_file(&stream_exact)
+            .unwrap_or_else(|error| panic_for_test(&ShellError::new("test", error.to_string())));
+        fs::remove_file(&stream_oversized)
+            .unwrap_or_else(|error| panic_for_test(&ShellError::new("test", error.to_string())));
 
         let shell_program = resolve_evaluator_program(Path::new("/bin/sh"))
             .unwrap_or_else(|error| panic_for_test(&error));
@@ -2270,11 +2446,7 @@ mod tests {
             "b3:plan",
             "b3:evaluator",
             "b3:resources",
-            || {
-                run_evaluator(&plan, &timeout_limits)
-                    .map(|output| output.stdout)
-                    .map_err(|error| error.stage)
-            },
+            || run_evaluator(&plan, &timeout_limits).map_err(|error| error.stage),
         )
         .unwrap_or_else(|error| panic_for_test(&error));
         assert_eq!(replay_timeout.report.verdict, ReplayVerdict::Failure);
@@ -2297,11 +2469,7 @@ mod tests {
             "b3:plan",
             "b3:evaluator",
             "b3:resources",
-            || {
-                run_evaluator(&oversized_plan, &oversized_limits)
-                    .map(|output| output.stdout)
-                    .map_err(|error| error.stage)
-            },
+            || run_evaluator(&oversized_plan, &oversized_limits).map_err(|error| error.stage),
         )
         .unwrap_or_else(|error| panic_for_test(&error));
         assert_eq!(replay_oversized.report.verdict, ReplayVerdict::Failure);
@@ -2309,6 +2477,140 @@ mod tests {
             replay_oversized.report.outcomes[0].failure_stage,
             "evaluator-stdout"
         );
+    }
+
+    #[test]
+    fn evaluator_reads_from_null_stdin_and_reports_eof() {
+        let shell_program = resolve_evaluator_program(Path::new("/bin/sh"))
+            .unwrap_or_else(|error| panic_for_test(&error));
+        let plan = EvaluationPlan {
+            program: shell_program,
+            args: vec![
+                OsString::from("-c"),
+                OsString::from(
+                    r#"if read -r value; then printf '%s' "$value"; else printf 'stdin_eof'; fi"#,
+                ),
+            ],
+            current_dir: std::env::temp_dir(),
+        };
+        let output = run_evaluator(&plan, &ResourceLimits::DEFAULT)
+            .unwrap_or_else(|error| panic_for_test(&error));
+        assert_eq!(output, b"stdin_eof");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn evaluator_timeout_tears_down_descendant_processes() {
+        let shell_program = resolve_evaluator_program(Path::new("/bin/sh"))
+            .unwrap_or_else(|error| panic_for_test(&error));
+        let pid_file = std::env::temp_dir().join(format!(
+            "nickel-export-descendant-pid-{}",
+            std::process::id()
+        ));
+        let mut timeout_limits = ResourceLimits::DEFAULT;
+        timeout_limits.evaluator_timeout_milliseconds = 20;
+        timeout_limits.evaluator_poll_milliseconds = 1;
+        let request = command_request(
+            &shell_program,
+            &[
+                OsString::from("-c"),
+                OsString::from(format!(
+                    r#"sleep 9999 & printf '%s' "$!" > {}; while :; do :; done"#,
+                    pid_file.display()
+                )),
+            ],
+            &std::env::temp_dir(),
+            &timeout_limits,
+        )
+        .unwrap_or_else(|error| panic_for_test(&error));
+        let timed_out = bounded_exec::run(request).unwrap_or_else(|error| {
+            panic_for_test(&ShellError::new("test", format_bounded_exec_error(error)))
+        });
+        assert_eq!(timed_out.completion, Completion::TimedOut);
+        assert!(matches!(timed_out.disposition, Disposition::TimedOut));
+        let pid = fs::read_to_string(&pid_file)
+            .unwrap_or_else(|error| {
+                panic_for_test(&ShellError::new("test-read", error.to_string()))
+            })
+            .trim()
+            .parse::<u32>()
+            .unwrap_or_else(|error| {
+                panic_for_test(&ShellError::new("test-parse", error.to_string()))
+            });
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!std::path::Path::new("/proc").join(pid.to_string()).exists());
+        fs::remove_file(&pid_file).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-cleanup", error.to_string()));
+        });
+    }
+
+    #[test]
+    fn input_budget_rejects_declared_source_overflow() {
+        let root = std::env::temp_dir().join(format!(
+            "nickel-export-input-budget-test-{}",
+            std::process::id()
+        ));
+        if let Err(error) = fs::remove_dir_all(&root) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                panic_for_test::<()>(&ShellError::new("test-cleanup", error.to_string()));
+            }
+        }
+        fs::create_dir_all(root.join("config")).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-setup", error.to_string()));
+        });
+        fs::write(root.join("config/source.ncl"), b"src1").unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-setup", error.to_string()));
+        });
+        fs::write(root.join("config/dependency.ncl"), b"dep2").unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-setup", error.to_string()));
+        });
+        let mut limits = ResourceLimits::DEFAULT;
+        limits.max_input_bytes = 7;
+        let mut retained = 0;
+        read_budgeted_input(
+            &root,
+            "config/source.ncl",
+            "read-source",
+            &limits,
+            &mut retained,
+        )
+        .unwrap_or_else(|error| panic_for_test(&error));
+        assert!(
+            read_budgeted_input(
+                &root,
+                "config/dependency.ncl",
+                "read-dependency",
+                &limits,
+                &mut retained,
+            )
+            .is_err()
+        );
+        fs::remove_dir_all(&root).unwrap_or_else(|error| {
+            panic_for_test::<()>(&ShellError::new("test-cleanup", error.to_string()));
+        });
+    }
+
+    #[test]
+    fn evaluator_failure_does_not_leak_raw_stdio() {
+        let shell_program = resolve_evaluator_program(Path::new("/bin/sh"))
+            .unwrap_or_else(|error| panic_for_test(&error));
+        let plan = EvaluationPlan {
+            program: shell_program,
+            args: vec![
+                OsString::from("-c"),
+                OsString::from("printf 'stdout_secret'; printf 'stderr_secret' 1>&2; exit 7"),
+            ],
+            current_dir: std::env::temp_dir(),
+        };
+        let failure = run_evaluator(&plan, &ResourceLimits::DEFAULT)
+            .err()
+            .unwrap_or_else(|| {
+                panic_for_test(&ShellError::new("test", "expected evaluator failure"))
+            });
+        assert_eq!(failure.stage, "evaluator-failure");
+        let rendered = format!("{failure}");
+        assert!(!rendered.contains("stdout_secret"));
+        assert!(!rendered.contains("stderr_secret"));
     }
 
     #[test]
